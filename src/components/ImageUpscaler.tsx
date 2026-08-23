@@ -30,6 +30,7 @@ function runInWorker(
 ): Promise<WorkerResult> {
   return new Promise((resolve, reject) => {
     const reqId = ++reqCounter;
+    const buf = payload.bytes.slice(0);
     const handler = (e: MessageEvent) => {
       const m = e.data as { type: string; reqId: number; pct?: number; data?: ArrayBuffer; width?: number; height?: number; message?: string };
       if (m.reqId !== reqId) return;
@@ -44,7 +45,12 @@ function runInWorker(
       }
     };
     worker.addEventListener("message", handler);
-    worker.postMessage({ type: "run", reqId, bytes: payload.bytes, modelId: payload.modelId, device: payload.device, dtype: payload.dtype }, [payload.bytes]);
+    try {
+      worker.postMessage({ type: "run", reqId, bytes: buf, modelId: payload.modelId, device: payload.device, dtype: payload.dtype }, [buf]);
+    } catch (err) {
+      worker.removeEventListener("message", handler);
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
   });
 }
 
@@ -103,6 +109,12 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
 
   const model = MODELS[modelKey];
 
+  useEffect(() => {
+    setStage((s) => (s === "error" ? "idle" : s));
+    setError("");
+    setProgress(0);
+  }, [modelKey]);
+
   const run = useCallback(
     async (file: File) => {
       setStage("loadingModel");
@@ -118,12 +130,14 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       fileRef.current = file;
 
       const attempts: Attempt[] = [
-        { device: "webgpu", dtype: "fp16" },
         { device: "wasm", dtype: "q8" },
+        { device: "webgpu", dtype: "fp16" },
       ];
 
       let lastError = "";
+      let done = false;
       for (const attempt of attempts) {
+        if (done) break;
         try {
           const hasGpu = typeof navigator !== "undefined" && "gpu" in navigator;
           if (attempt.device === "webgpu" && !hasGpu) continue;
@@ -150,6 +164,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           setUsedLabel(`${attempt.device === "webgpu" ? "GPU" : "CPU"} · ${model.scale}×`);
           setStage("done");
           setDivider(50);
+          done = true;
           return;
         } catch (err) {
           lastError = err instanceof Error ? err.message : String(err);
@@ -276,8 +291,13 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       )}
 
       {error && (
-        <div className="flex items-start gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-          <FiAlertCircle className="mt-0.5 shrink-0" /> {error}
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
+          <FiAlertCircle className="shrink-0" /> {error}
+          {fileRef.current && (
+            <button onClick={() => fileRef.current && void run(fileRef.current)} className="ml-auto rounded-lg border border-red-400/40 px-3 py-1.5 text-xs font-semibold text-red-300 transition-colors hover:bg-red-500/20">
+              {isEs ? "Reintentar" : "Retry"}
+            </button>
+          )}
         </div>
       )}
 
