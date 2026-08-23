@@ -13,12 +13,12 @@ type ModelKey = "x2-light" | "x2-classic" | "x4-real";
 type Mode = "upscale" | "enhance";
 
 const MODEL_DEFS: Record<ModelKey, {
-  id: string; scale: 2 | 4; tileSize: number; pad: number; maxSide: number;
+  id: string; scale: 2 | 4; tileSize: number; pad: number; maxSide: number; shotLimit: number;
   es: string; en: string; descEs: string; descEn: string;
 }> = {
-  "x2-light": { id: "Xenova/swin2SR-lightweight-x2-64", scale: 2, tileSize: 256, pad: 32, maxSide: 2048, es: "Rápido ×2", en: "Fast ×2", descEs: "El más ligero y veloz. Ideal para capturas e imágenes pequeñas.", descEn: "Lightest and fastest. Great for screenshots and small images." },
-  "x2-classic": { id: "Xenova/swin2SR-classical-sr-x2-64", scale: 2, tileSize: 256, pad: 32, maxSide: 1536, es: "Calidad ×2", en: "Quality ×2", descEs: "Más detalle que el rápido, mismo factor ×2.", descEn: "More detail than fast, same ×2 factor." },
-  "x4-real": { id: "Xenova/swin2SR-realworld-sr-x4-64-bsrgan-psnr", scale: 4, tileSize: 256, pad: 32, maxSide: 1280, es: "Fotos reales ×4", en: "Real photos ×4", descEs: "Entrenado para fotografía real. El más lento: procesa por teselas.", descEn: "Trained on real photography. Slowest: processes in tiles." },
+  "x2-light": { id: "Xenova/swin2SR-lightweight-x2-64", scale: 2, tileSize: 256, pad: 32, maxSide: 2048, shotLimit: 1024, es: "Rápido ×2", en: "Fast ×2", descEs: "El más ligero y veloz. Ideal para capturas e imágenes pequeñas.", descEn: "Lightest and fastest. Great for screenshots and small images." },
+  "x2-classic": { id: "Xenova/swin2SR-classical-sr-x2-64", scale: 2, tileSize: 256, pad: 32, maxSide: 1536, shotLimit: 800, es: "Calidad ×2", en: "Quality ×2", descEs: "Más detalle que el rápido, mismo factor ×2.", descEn: "More detail than fast, same ×2 factor." },
+  "x4-real": { id: "Xenova/swin2SR-realworld-sr-x4-64-bsrgan-psnr", scale: 4, tileSize: 256, pad: 32, maxSide: 1280, shotLimit: 512, es: "Fotos reales ×4", en: "Real photos ×4", descEs: "Entrenado para fotografía real. El más lento: imágenes grandes van por teselas.", descEn: "Trained on real photography. Slowest: large images go tile by tile." },
 };
 
 interface Attempt { device: "webgpu" | "wasm"; dtype?: string; }
@@ -136,9 +136,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       setCapped(prepared.capped);
       fileRef.current = file;
 
-      const cols = Math.ceil(prepared.width / Math.min(model.tileSize, prepared.width));
-      const rows = Math.ceil(prepared.height / Math.min(model.tileSize, prepared.height));
-      const nTiles = cols * rows;
+      const singleShot = Math.max(prepared.width, prepared.height) <= model.shotLimit;
 
       const attempts: Attempt[] = [
         { device: "wasm", dtype: "q8" },
@@ -156,10 +154,10 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           const t0 = performance.now();
           const result = await runInWorker(
             worker,
-            { bytes: prepared.bytes, modelId: model.id, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: model.tileSize, pad: model.pad },
+            { bytes: prepared.bytes, modelId: model.id, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: singleShot ? 0 : model.tileSize, pad: model.pad },
             (pct, tile, total) => {
               setStage("processing");
-              if (tile && total) setTileInfo(isEs ? `Tesela ${tile} de ${total}` : `Tile ${tile} of ${total}`);
+              if (tile && total) setTileInfo(singleShot ? (isEs ? "Procesando imagen completa…" : "Processing full image…") : isEs ? `Tesela ${tile} de ${total}` : `Tile ${tile} of ${total}`);
               setProgress(pct === 100 && !total ? 100 : pct);
             },
             () => setStage("processing"),
@@ -318,7 +316,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           <p className="text-sm font-medium text-text">
             {stage === "loadingModel"
               ? isEs ? "Descargando modelo IA (primera vez; luego queda en caché)…" : "Downloading AI model (first time; cached afterwards)…"
-              : isEs ? "Procesando teselas… en CPU puede tardar varios minutos" : "Processing tiles… CPU can take several minutes"}
+              : isEs ? "Procesando… en CPU puede tardar desde segundos hasta varios minutos según tamaño" : "Processing… on CPU this can take seconds to several minutes depending on size"}
           </p>
           <div className="mx-auto h-2 w-full max-w-md overflow-hidden rounded-full bg-white/10">
             <div className={`h-full rounded-full bg-primary transition-all duration-300 ${stage === "processing" ? "animate-pulse" : ""}`} style={{ width: `${stage === "loadingModel" ? Math.max(progress, 4) : Math.max(progress, 8)}%` }} />

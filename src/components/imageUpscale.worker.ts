@@ -59,6 +59,23 @@ function rawToCanvas(raw: RawOut): OffscreenCanvas {
   return c;
 }
 
+async function runModel(pipe: AnyPipe, canvas: OffscreenCanvas, expectedW: number, expectedH: number): Promise<OffscreenCanvas> {
+  const blob = await canvas.convertToBlob({ type: "image/png" });
+  const url = URL.createObjectURL(blob);
+  let raw: RawOut;
+  try {
+    const res = await pipe(url);
+    raw = (Array.isArray(res) ? res[0] : res) as unknown as RawOut;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+  if (!raw || !raw.width || !raw.data) throw new Error("empty-output");
+  if (raw.width !== expectedW || raw.height !== expectedH) {
+    throw new Error(`unexpected-output-size:${raw.width}x${raw.height}:expected:${expectedW}x${expectedH}`);
+  }
+  return rawToCanvas(raw);
+}
+
 self.onmessage = async (e: MessageEvent) => {
   const m = e.data as {
     type: string; reqId: number; bytes: ArrayBuffer; modelId: string;
@@ -76,77 +93,67 @@ self.onmessage = async (e: MessageEvent) => {
     const w = bmp.width;
     const h = bmp.height;
 
-    const tw = Math.min(tileSize, w);
-    const th = Math.min(tileSize, h);
-    const cols = Math.ceil(w / tw);
-    const rows = Math.ceil(h / th);
-    const total = cols * rows;
-    let done = 0;
+    const single = tileSize <= 0 || (w <= tileSize && h <= tileSize);
+    let finalCanvas: OffscreenCanvas;
 
-    const out = new OffscreenCanvas(w * scale, h * scale);
-    const octx = out.getContext("2d")!;
+    if (single) {
+      self.postMessage({ type: "progress", reqId, pct: 100, tile: 1, total: 1 });
+      const src = new OffscreenCanvas(w, h);
+      src.getContext("2d")!.drawImage(bmp, 0, 0);
+      finalCanvas = await runModel(pipe, src, w * scale, h * scale);
+    } else {
+      const tw = Math.min(tileSize, w);
+      const th = Math.min(tileSize, h);
+      const cols = Math.ceil(w / tw);
+      const rows = Math.ceil(h / th);
+      const total = cols * rows;
+      let done = 0;
 
-    for (let r = 0; r < rows; r++) {
-      for (let c = 0; c < cols; c++) {
-        const sx = c === cols - 1 ? Math.max(0, w - tw) : c * tw;
-        const sy = r === rows - 1 ? Math.max(0, h - th) : r * th;
-        const px = Math.max(0, sx - pad);
-        const py = Math.max(0, sy - pad);
-        const pw = Math.min(tw + pad * 2, w - px);
-        const ph = Math.min(th + pad * 2, h - py);
+      const out = new OffscreenCanvas(w * scale, h * scale);
+      const octx = out.getContext("2d")!;
 
-        const tmp = new OffscreenCanvas(pw, ph);
-        const tctx = tmp.getContext("2d")!;
-        tctx.drawImage(bmp, px - sx, py - sy);
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          const sx = c === cols - 1 ? Math.max(0, w - tw) : c * tw;
+          const sy = r === rows - 1 ? Math.max(0, h - th) : r * th;
+          const px = Math.max(0, sx - pad);
+          const py = Math.max(0, sy - pad);
+          const pw = Math.min(tw + pad * 2, w - px);
+          const ph = Math.min(th + pad * 2, h - py);
 
-        const tblob = await tmp.convertToBlob({ type: "image/png" });
-        const turl = URL.createObjectURL(tblob);
+          const tmp = new OffscreenCanvas(pw, ph);
+          const tctx = tmp.getContext("2d")!;
+          tctx.drawImage(bmp, px - sx, py - sy);
 
-        let raw: RawOut;
-        try {
-          const res = await pipe(turl);
-          raw = (Array.isArray(res) ? res[0] : res) as unknown as RawOut;
-          if (!raw || !raw.width || !raw.data) throw new Error("empty-output");
-        } finally {
-          URL.revokeObjectURL(turl);
+          const tileOut = await runModel(pipe, tmp, pw * scale, ph * scale);
+          octx.drawImage(
+            tileOut,
+            (sx - px) * scale, (sy - py) * scale, tw * scale, th * scale,
+            sx * scale, sy * scale, tw * scale, th * scale
+          );
+
+          done++;
+          self.postMessage({ type: "progress", reqId, pct: 100, tile: done, total });
         }
-
-        const tileCanvas = rawToCanvas(raw);
-        octx.drawImage(
-          tileCanvas,
-          (sx - px) * scale, (sy - py) * scale, tw * scale, th * scale,
-          sx * scale, sy * scale, tw * scale, th * scale
-        );
-
-        done++;
-        self.postMessage({
-          type: "progress", reqId,
-          pct: 100,
-          tile: done, total,
-        });
       }
+      finalCanvas = out;
     }
 
-    let finalCanvas = out;
-    let fw = out.width;
-    let fh = out.height;
     if (mode === "enhance") {
-      finalCanvas = new OffscreenCanvas(w, h);
-      const fctx = finalCanvas.getContext("2d")!;
-      fctx.imageSmoothingEnabled = true;
-      fctx.imageSmoothingQuality = "high";
-      fctx.drawImage(out, 0, 0, w, h);
-      fw = w;
-      fh = h;
+      const small = new OffscreenCanvas(w, h);
+      const sctx = small.getContext("2d")!;
+      sctx.imageSmoothingEnabled = true;
+      sctx.imageSmoothingQuality = "high";
+      sctx.drawImage(finalCanvas, 0, 0, w, h);
+      finalCanvas = small;
     }
 
-    const fctx2d = finalCanvas.getContext("2d")!;
-    const imageData = fctx2d.getImageData(0, 0, fw, fh);
+    const fctx = finalCanvas.getContext("2d")!;
+    const fw = finalCanvas.width;
+    const fh = finalCanvas.height;
+    const imageData = fctx.getImageData(0, 0, fw, fh);
     const buf = imageData.data.buffer as ArrayBuffer;
-    self.postMessage(
-      { type: "done", reqId, data: buf, width: fw, height: fh },
-      [buf]
-    );
+    self.postMessage({ type: "done", reqId, data: buf, width: fw, height: fh }, [buf]);
   } catch (err) {
     delete cache[cacheKey(modelId, device)];
     self.postMessage({ type: "error", reqId, message: err instanceof Error ? err.message : String(err) });
