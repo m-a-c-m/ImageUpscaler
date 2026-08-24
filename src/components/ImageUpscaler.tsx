@@ -9,16 +9,17 @@ import {
 interface Props { locale?: string; }
 
 type Stage = "idle" | "loadingModel" | "processing" | "done" | "error";
-type ModelKey = "x2-light" | "x2-classic" | "x4-real";
+type ModelKey = "x4-turbo" | "x2-light" | "x2-classic" | "x4-real";
 type Mode = "upscale" | "enhance";
 
 const MODEL_DEFS: Record<ModelKey, {
-  id: string; scale: 2 | 4; tileSize: number; pad: number; maxSide: number; shotLimit: number;
+  id: string; engine: "hf" | "raw"; scale: 2 | 4; tileSize: number; pad: number; maxSide: number; shotLimit: number;
   es: string; en: string; descEs: string; descEn: string;
 }> = {
-  "x2-light": { id: "Xenova/swin2SR-lightweight-x2-64", scale: 2, tileSize: 256, pad: 32, maxSide: 2048, shotLimit: 1024, es: "Rápido ×2", en: "Fast ×2", descEs: "El más ligero y veloz. Ideal para capturas e imágenes pequeñas.", descEn: "Lightest and fastest. Great for screenshots and small images." },
-  "x2-classic": { id: "Xenova/swin2SR-classical-sr-x2-64", scale: 2, tileSize: 256, pad: 32, maxSide: 1536, shotLimit: 800, es: "Calidad ×2", en: "Quality ×2", descEs: "Más detalle que el rápido, mismo factor ×2.", descEn: "More detail than fast, same ×2 factor." },
-  "x4-real": { id: "Xenova/swin2SR-realworld-sr-x4-64-bsrgan-psnr", scale: 4, tileSize: 256, pad: 32, maxSide: 1280, shotLimit: 512, es: "Fotos reales ×4", en: "Real photos ×4", descEs: "Entrenado para fotografía real. El más lento: imágenes grandes van por teselas.", descEn: "Trained on real photography. Slowest: large images go tile by tile." },
+  "x4-turbo": { id: "https://huggingface.co/bukuroo/RealESRGAN-ONNX/resolve/main/real-esrgan-x4plus-128.onnx", engine: "raw", scale: 4, tileSize: 128, pad: 0, maxSide: 2048, shotLimit: 0, es: "Turbo fotos ×4", en: "Turbo photos ×4", descEs: "Real-ESRGAN: el estándar para fotos reales. Mucho más rápido por tesela.", descEn: "Real-ESRGAN: the standard for real photos. Much faster per tile." },
+  "x2-light": { id: "Xenova/swin2SR-lightweight-x2-64", engine: "hf", scale: 2, tileSize: 256, pad: 32, maxSide: 2048, shotLimit: 1024, es: "Rápido ×2", en: "Fast ×2", descEs: "El más ligero. Ideal para capturas e imágenes pequeñas.", descEn: "Lightest. Great for screenshots and small images." },
+  "x2-classic": { id: "Xenova/swin2SR-classical-sr-x2-64", engine: "hf", scale: 2, tileSize: 256, pad: 32, maxSide: 1536, shotLimit: 800, es: "Calidad ×2", en: "Quality ×2", descEs: "Más detalle que el rápido, mismo factor ×2.", descEn: "More detail than fast, same ×2 factor." },
+  "x4-real": { id: "Xenova/swin2SR-realworld-sr-x4-64-bsrgan-psnr", engine: "hf", scale: 4, tileSize: 256, pad: 32, maxSide: 1280, shotLimit: 512, es: "Máxima calidad ×4", en: "Max quality ×4", descEs: "Swin2SR realworld: el más lento, calidad máxima en fotos difíciles.", descEn: "Swin2SR realworld: slowest, max quality on hard photos." },
 };
 
 interface Attempt { device: "webgpu" | "wasm"; dtype?: string; }
@@ -28,7 +29,7 @@ interface WorkerResult { data: Uint8ClampedArray; width: number; height: number;
 
 function runInWorker(
   worker: Worker,
-  payload: { bytes: ArrayBuffer; modelId: string; device: string; dtype?: string; scale: number; mode: Mode; tileSize: number; pad: number },
+  payload: { bytes: ArrayBuffer; modelId: string; engine: "hf" | "raw"; origin: string; device: string; dtype?: string; scale: number; mode: Mode; tileSize: number; pad: number },
   onProgress: (pct: number, tile?: number, total?: number) => void,
   onProcessing: () => void,
 ): Promise<WorkerResult> {
@@ -50,7 +51,7 @@ function runInWorker(
     };
     worker.addEventListener("message", handler);
     try {
-      worker.postMessage({ type: "run", reqId, bytes: buf, modelId: payload.modelId, device: payload.device, dtype: payload.dtype, scale: payload.scale, mode: payload.mode, tileSize: payload.tileSize, pad: payload.pad }, [buf]);
+      worker.postMessage({ type: "run", reqId, bytes: buf, modelId: payload.modelId, engine: payload.engine, origin: payload.origin, device: payload.device, dtype: payload.dtype, scale: payload.scale, mode: payload.mode, tileSize: payload.tileSize, pad: payload.pad }, [buf]);
     } catch (err) {
       worker.removeEventListener("message", handler);
       reject(err instanceof Error ? err : new Error(String(err)));
@@ -89,7 +90,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
   const [progress, setProgress] = useState(0);
   const [tileInfo, setTileInfo] = useState("");
   const [error, setError] = useState("");
-  const [modelKey, setModelKey] = useState<ModelKey>("x2-light");
+  const [modelKey, setModelKey] = useState<ModelKey>("x4-turbo");
   const [mode, setMode] = useState<Mode>("upscale");
   const [origUrl, setOrigUrl] = useState("");
   const [resultUrl, setResultUrl] = useState("");
@@ -136,12 +137,14 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       setCapped(prepared.capped);
       fileRef.current = file;
 
-      const singleShot = Math.max(prepared.width, prepared.height) <= model.shotLimit;
+      const singleShot = model.engine === "hf" && Math.max(prepared.width, prepared.height) <= model.shotLimit;
 
-      const attempts: Attempt[] = [
-        { device: "wasm", dtype: "q8" },
-        { device: "webgpu", dtype: "fp16" },
-      ];
+      const attempts: Attempt[] = model.engine === "raw"
+        ? [{ device: "wasm" }]
+        : [
+            { device: "wasm", dtype: "q8" },
+            { device: "webgpu", dtype: "fp16" },
+          ];
 
       let lastError = "";
       for (const attempt of attempts) {
@@ -154,7 +157,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           const t0 = performance.now();
           const result = await runInWorker(
             worker,
-            { bytes: prepared.bytes, modelId: model.id, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: singleShot ? 0 : model.tileSize, pad: model.pad },
+            { bytes: prepared.bytes, modelId: model.id, engine: model.engine, origin: window.location.origin, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: singleShot ? 0 : model.tileSize, pad: model.pad },
             (pct, tile, total) => {
               setStage("processing");
               if (tile && total) setTileInfo(singleShot ? (isEs ? "Procesando imagen completa…" : "Processing full image…") : isEs ? `Tesela ${tile} de ${total}` : `Tile ${tile} of ${total}`);
