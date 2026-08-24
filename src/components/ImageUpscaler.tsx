@@ -16,7 +16,7 @@ const MODEL_DEFS: Record<ModelKey, {
   id: string; engine: "hf" | "raw"; scale: 2 | 4; tileSize: number; pad: number; maxSide: number; shotLimit: number;
   es: string; en: string; descEs: string; descEn: string;
 }> = {
-  "x4-turbo": { id: "https://huggingface.co/bukuroo/RealESRGAN-ONNX/resolve/main/real-esrgan-x4plus-128.onnx", engine: "raw", scale: 4, tileSize: 128, pad: 0, maxSide: 2048, shotLimit: 0, es: "Turbo fotos ×4", en: "Turbo photos ×4", descEs: "Real-ESRGAN: el estándar para fotos reales. Mucho más rápido por tesela.", descEn: "Real-ESRGAN: the standard for real photos. Much faster per tile." },
+  "x4-turbo": { id: "https://huggingface.co/bukuroo/RealESRGAN-ONNX/resolve/main/real-esrgan-x4plus-128.onnx", engine: "raw", scale: 4, tileSize: 128, pad: 0, maxSide: 1024, shotLimit: 0, es: "Turbo fotos ×4", en: "Turbo photos ×4", descEs: "Real-ESRGAN en GPU: rápido incluso en fotos grandes. Salida hasta 4096px.", descEn: "Real-ESRGAN on GPU: fast even for large photos. Output up to 4096px." },
   "x2-light": { id: "Xenova/swin2SR-lightweight-x2-64", engine: "hf", scale: 2, tileSize: 256, pad: 32, maxSide: 2048, shotLimit: 1024, es: "Rápido ×2", en: "Fast ×2", descEs: "El más ligero. Ideal para capturas e imágenes pequeñas.", descEn: "Lightest. Great for screenshots and small images." },
   "x2-classic": { id: "Xenova/swin2SR-classical-sr-x2-64", engine: "hf", scale: 2, tileSize: 256, pad: 32, maxSide: 1536, shotLimit: 800, es: "Calidad ×2", en: "Quality ×2", descEs: "Más detalle que el rápido, mismo factor ×2.", descEn: "More detail than fast, same ×2 factor." },
   "x4-real": { id: "Xenova/swin2SR-realworld-sr-x4-64-bsrgan-psnr", engine: "hf", scale: 4, tileSize: 256, pad: 32, maxSide: 1280, shotLimit: 512, es: "Máxima calidad ×4", en: "Max quality ×4", descEs: "Swin2SR realworld: el más lento, calidad máxima en fotos difíciles.", descEn: "Swin2SR realworld: slowest, max quality on hard photos." },
@@ -102,14 +102,17 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
   const [isMobile, setIsMobile] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [divider, setDivider] = useState(50);
+  const [hasGpu, setHasGpu] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const fileRef = useRef<File | null>(null);
   const compareRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
+  const cancelRef = useRef(false);
 
   useEffect(() => {
     setIsMobile(window.matchMedia("(max-width: 639px)").matches);
+    setHasGpu(typeof navigator !== "undefined" && "gpu" in navigator);
     const w = new Worker(new URL("./imageUpscale.worker.ts", import.meta.url), { type: "module" });
     workerRef.current = w;
     return () => w.terminate();
@@ -138,6 +141,19 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       fileRef.current = file;
 
       const singleShot = model.engine === "hf" && Math.max(prepared.width, prepared.height) <= model.shotLimit;
+      const colsT = Math.ceil(prepared.width / Math.min(model.tileSize, prepared.width));
+      const rowsT = Math.ceil(prepared.height / Math.min(model.tileSize, prepared.height));
+      const nTiles = colsT * rowsT;
+
+      if (model.engine === "raw" && !hasGpu && nTiles > 48) {
+        setError(
+          isEs
+            ? `Esta imagen necesita ${nTiles} teselas en CPU (sin WebGPU) y llevaría más de una hora. Reduce el tamaño de la imagen o usa un navegador con WebGPU (Chrome/Edge).`
+            : `This image needs ${nTiles} CPU tiles (no WebGPU) and would take over an hour. Reduce the image size or use a WebGPU browser (Chrome/Edge).`
+        );
+        setStage("error");
+        return;
+      }
 
       const attempts: Attempt[] = model.engine === "raw"
         ? [{ device: "wasm" }]
@@ -147,7 +163,9 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           ];
 
       let lastError = "";
+      cancelRef.current = false;
       for (const attempt of attempts) {
+        if (cancelRef.current) break;
         try {
           const hasGpu = typeof navigator !== "undefined" && "gpu" in navigator;
           if (attempt.device === "webgpu" && !hasGpu) continue;
@@ -224,6 +242,15 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
     setOrigUrl("");
     setResultUrl("");
     setError("");
+    setProgress(0);
+    setTileInfo("");
+  }, []);
+
+  const cancel = useCallback(() => {
+    cancelRef.current = true;
+    workerRef.current?.terminate();
+    workerRef.current = new Worker(new URL("./imageUpscale.worker.ts", import.meta.url), { type: "module" });
+    setStage("idle");
     setProgress(0);
     setTileInfo("");
   }, []);
@@ -325,6 +352,9 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
             <div className={`h-full rounded-full bg-primary transition-all duration-300 ${stage === "processing" ? "animate-pulse" : ""}`} style={{ width: `${stage === "loadingModel" ? Math.max(progress, 4) : Math.max(progress, 8)}%` }} />
           </div>
           <p className="flex items-center justify-center gap-1.5 text-xs text-text-muted/70"><FiClock /> {tileInfo || (isEs ? "Preparando…" : "Preparing…")}</p>
+          <button onClick={cancel} className="mx-auto block rounded-lg border border-border/30 bg-surface/60 px-4 py-1.5 text-xs font-medium text-text-muted transition-colors hover:text-text">
+            {isEs ? "Cancelar" : "Cancel"}
+          </button>
         </div>
       )}
 

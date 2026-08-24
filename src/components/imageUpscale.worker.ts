@@ -42,23 +42,30 @@ async function getPipe(
   return built;
 }
 
-let ortSession: Promise<ort.InferenceSession> | null = null;
+const ortSessions: Record<string, Promise<ort.InferenceSession> | undefined> = {};
 
-async function getRawSession(origin: string, modelUrl: string, onProgress: (p: number) => void): Promise<ort.InferenceSession> {
-  if (!ortSession) {
-    ortSession = (async () => {
-      const wasmUrl = `${origin}/ort/ort-wasm-simd-threaded.wasm`;
-      const mjsUrl = `${origin}/ort/ort-wasm-simd-threaded.mjs`;
-      const [wasmBinary, modelBuffer] = await Promise.all([
-        fetchArrayBufferCached(wasmUrl, "upscaler-ort-v1"),
-        fetchArrayBufferCached(modelUrl, "upscaler-models-v1", (loaded, total) => onProgress(Math.min(99, Math.round((loaded / total) * 100)))),
-      ]);
-      ort.env.wasm.wasmBinary = new Uint8Array(wasmBinary);
-      ort.env.wasm.wasmPaths = { wasm: wasmUrl, mjs: mjsUrl };
-      return ort.InferenceSession.create(new Uint8Array(modelBuffer), { executionProviders: ["wasm"] });
-    })();
-  }
-  return ortSession;
+async function getRawSession(origin: string, modelUrl: string, useGpu: boolean, onProgress: (p: number) => void): Promise<ort.InferenceSession> {
+  const key = `${useGpu ? "gpu" : "cpu"}::${modelUrl}`;
+  const cached = ortSessions[key];
+  if (cached) return cached;
+  const built = (async () => {
+    const wasmUrl = useGpu ? `${origin}/ort/ort-wasm-simd-threaded.jsep.wasm` : `${origin}/ort/ort-wasm-simd-threaded.wasm`;
+    const mjsUrl = useGpu ? `${origin}/ort/ort-wasm-simd-threaded.jsep.mjs` : `${origin}/ort/ort-wasm-simd-threaded.mjs`;
+    const [wasmBinary, modelBuffer] = await Promise.all([
+      fetchArrayBufferCached(wasmUrl, "upscaler-ort-v1"),
+      fetchArrayBufferCached(modelUrl, "upscaler-models-v1", (loaded, total) => onProgress(Math.min(99, Math.round((loaded / total) * 100)))),
+    ]);
+    ort.env.wasm.wasmBinary = new Uint8Array(wasmBinary);
+    ort.env.wasm.wasmPaths = { wasm: wasmUrl, mjs: mjsUrl };
+    return ort.InferenceSession.create(new Uint8Array(modelBuffer), {
+      executionProviders: [useGpu ? "webgpu" : "wasm"],
+    });
+  })();
+  ortSessions[key] = built;
+  built.catch(() => {
+    delete ortSessions[key];
+  });
+  return built;
 }
 
 function rawUpscaleAsync(session: ort.InferenceSession, src: OffscreenCanvas, scale: number): Promise<OffscreenCanvas> {
@@ -140,8 +147,21 @@ self.onmessage = async (e: MessageEvent) => {
     let runTile: (src: OffscreenCanvas, inSize: number, outSize: number) => Promise<OffscreenCanvas>;
 
     if (engine === "raw") {
-      const session = await getRawSession(origin, modelId, (pct) => self.postMessage({ type: "progress", reqId, pct }));
-      runTile = (src) => rawUpscaleAsync(session, src, scale);
+      const progressCb = (pct: number) => self.postMessage({ type: "progress", reqId, pct });
+      const hasGpu = typeof navigator !== "undefined" && "gpu" in navigator;
+      let useGpu = hasGpu;
+      let session = await getRawSession(origin, modelId, useGpu, progressCb);
+      runTile = async (src) => {
+        try {
+          return await rawUpscaleAsync(session, src, scale);
+        } catch (err) {
+          if (!useGpu) throw err;
+          useGpu = false;
+          self.postMessage({ type: "progress", reqId, pct: 0 });
+          session = await getRawSession(origin, modelId, false, progressCb);
+          return rawUpscaleAsync(session, src, scale);
+        }
+      };
     } else {
       const pipe = await getPipe(modelId, device, dtype, (pct) => self.postMessage({ type: "progress", reqId, pct }));
       runTile = (src, inW, inH) => runModel(pipe, src, inW * scale, inH * scale);
@@ -218,7 +238,7 @@ self.onmessage = async (e: MessageEvent) => {
     self.postMessage({ type: "done", reqId, data: buf, width: fw, height: fh }, [buf]);
   } catch (err) {
     if (engine === "hf") delete cache[cacheKey(modelId, device)];
-    else ortSession = null;
+    for (const k of Object.keys(ortSessions)) delete ortSessions[k];
     self.postMessage({ type: "error", reqId, message: err instanceof Error ? err.message : String(err) });
   }
 };
