@@ -9,16 +9,40 @@ import {
 interface Props { locale?: string; }
 
 type Stage = "idle" | "loadingModel" | "processing" | "done" | "error";
-type ModelKey = "x2-light" | "x2-classic" | "x4-real";
 type Mode = "upscale" | "enhance";
+type ModelKey = "x4-plksr" | "x4-esrgan" | "x2-light" | "dejpeg" | "denoise";
 
-const MODEL_DEFS: Record<ModelKey, {
-  id: string; engine: "hf"; scale: 2 | 4; tileSize: number; pad: number; maxSide: number; shotLimit: number;
-  es: string; en: string; descEs: string; descEn: string;
-}> = {
-  "x2-light": { id: "Xenova/swin2SR-lightweight-x2-64", engine: "hf", scale: 2, tileSize: 256, pad: 32, maxSide: 2048, shotLimit: 1024, es: "Rápido ×2", en: "Fast ×2", descEs: "El más ligero y rápido. Ideal para capturas e imágenes pequeñas.", descEn: "Lightest and fastest. Great for screenshots and small images." },
-  "x2-classic": { id: "Xenova/swin2SR-classical-sr-x2-64", engine: "hf", scale: 2, tileSize: 256, pad: 32, maxSide: 1536, shotLimit: 800, es: "Calidad ×2", en: "Quality ×2", descEs: "Más detalle que el rápido, mismo factor ×2.", descEn: "More detail than fast, same ×2 factor." },
-  "x4-real": { id: "Xenova/swin2SR-realworld-sr-x4-64-bsrgan-psnr", engine: "hf", scale: 4, tileSize: 256, pad: 32, maxSide: 1280, shotLimit: 512, es: "Máxima calidad ×4", en: "Max quality ×4", descEs: "Swin2SR realworld: calidad máxima en fotos, el más lento.", descEn: "Swin2SR realworld: max quality on photos, slowest." },
+interface ModelDef {
+  id: string;
+  engine: "hf" | "raw";
+  bgr: boolean;
+  scale: 1 | 2 | 4;
+  tileSize: number;
+  stride: number;
+  ring: number;
+  pad: number;
+  maxSide: number;
+  shotLimit: number;
+  es: string;
+  en: string;
+  descEs: string;
+  descEn: string;
+}
+
+const HF = "Xenova/swin2SR-lightweight-x2-64";
+const NES = "https://huggingface.co/nesaorg";
+
+const MODELS: Record<ModelKey, ModelDef> = {
+  "x4-plksr": { id: `${NES}/4xNomosWebPhoto_RealPLKSR_fp32_opset17/resolve/main/4xNomosWebPhoto_RealPLKSR_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, es: "Fotos web ×4", en: "Web photos ×4", descEs: "RealPLKSR sobre NomosWebPhoto: el favorito de la comunidad para fotos reales. Rápido y ligero.", descEn: "RealPLKSR on NomosWebPhoto: the community favorite for real photos. Fast and light." },
+  "x4-esrgan": { id: `${NES}/4xNomosWebPhoto_esrgan_fp32_opset17/resolve/main/4xNomosWebPhoto_esrgan_fp32_opset17.onnx`, engine: "raw", bgr: true, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, es: "Fotos ×4 ESRGAN", en: "Photos ×4 ESRGAN", descEs: "ESRGAN clásico sobre NomosWebPhoto: texturas más marcadas, más lento.", descEn: "Classic ESRGAN on NomosWebPhoto: stronger textures, slower." },
+  "x2-light": { id: HF, engine: "hf", bgr: false, scale: 2, tileSize: 256, stride: 256, ring: 32, pad: 32, maxSide: 2048, shotLimit: 1024, es: "Capturas ×2", en: "Screenshots ×2", descEs: "Swin2SR ligero: el mejor para capturas, logos e imágenes pequeñas.", descEn: "Light Swin2SR: best for screenshots, logos and small images." },
+  dejpeg: { id: `${NES}/1xDeJPG_realplksr_otf_60_fp32_opset17/resolve/main/1xDeJPG_realplksr_otf_60_fp32_opset17.onnx`, engine: "raw", bgr: true, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 2048, shotLimit: 0, es: "Quitar artefactos JPEG", en: "Remove JPEG artifacts", descEs: "Modelo ×1 dedicado: elimina bloques y zumbido de compresión sin cambiar el tamaño.", descEn: "Dedicated ×1 model: removes compression blocks and buzz without resizing." },
+  denoise: { id: `${NES}/1xDeNoise_realplksr_otf_fp32/resolve/main/1xDeNoise_realplksr_otf_fp32.onnx`, engine: "raw", bgr: true, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 2048, shotLimit: 0, es: "Quitar ruido", en: "Remove noise", descEs: "Modelo ×1 dedicado: limpia grano y ruido manteniendo la resolución.", descEn: "Dedicated ×1 model: cleans grain and noise keeping resolution." },
+};
+
+const MODELS_BY_MODE: Record<Mode, ModelKey[]> = {
+  upscale: ["x4-plksr", "x4-esrgan", "x2-light"],
+  enhance: ["dejpeg", "denoise"],
 };
 
 interface Attempt { device: "webgpu" | "wasm"; dtype?: string; }
@@ -28,7 +52,7 @@ interface WorkerResult { data: Uint8ClampedArray; width: number; height: number;
 
 function runInWorker(
   worker: Worker,
-  payload: { bytes: ArrayBuffer; modelId: string; origin: string; device: string; dtype?: string; scale: number; mode: Mode; tileSize: number; pad: number },
+  payload: { bytes: ArrayBuffer; modelId: string; engine: string; bgr: boolean; origin: string; device: string; dtype?: string; scale: number; mode: Mode; tileSize: number; stride: number; ring: number; pad: number },
   onProgress: (pct: number, tile?: number, total?: number) => void,
   onProcessing: () => void,
 ): Promise<WorkerResult> {
@@ -50,7 +74,7 @@ function runInWorker(
     };
     worker.addEventListener("message", handler);
     try {
-      worker.postMessage({ type: "run", reqId, bytes: buf, modelId: payload.modelId, origin: payload.origin, device: payload.device, dtype: payload.dtype, scale: payload.scale, mode: payload.mode, tileSize: payload.tileSize, pad: payload.pad }, [buf]);
+      worker.postMessage({ type: "run", reqId, bytes: buf, modelId: payload.modelId, engine: payload.engine, bgr: payload.bgr, origin: payload.origin, device: payload.device, dtype: payload.dtype, scale: payload.scale, mode: payload.mode, tileSize: payload.tileSize, stride: payload.stride, ring: payload.ring, pad: payload.pad }, [buf]);
     } catch (err) {
       worker.removeEventListener("message", handler);
       reject(err instanceof Error ? err : new Error(String(err)));
@@ -89,8 +113,8 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
   const [progress, setProgress] = useState(0);
   const [tileInfo, setTileInfo] = useState("");
   const [error, setError] = useState("");
-  const [modelKey, setModelKey] = useState<ModelKey>("x2-light");
   const [mode, setMode] = useState<Mode>("upscale");
+  const [modelKey, setModelKey] = useState<ModelKey>("x4-plksr");
   const [origUrl, setOrigUrl] = useState("");
   const [resultUrl, setResultUrl] = useState("");
   const [origDims, setOrigDims] = useState({ w: 0, h: 0 });
@@ -99,9 +123,9 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
   const [elapsed, setElapsed] = useState("");
   const [capped, setCapped] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [hasGpu, setHasGpu] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [divider, setDivider] = useState(50);
-  const [hasGpu, setHasGpu] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const fileRef = useRef<File | null>(null);
@@ -117,17 +141,14 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
     return () => w.terminate();
   }, []);
 
-  const model = MODEL_DEFS[modelKey];
+  const model = MODELS[modelKey];
+  const availableKeys = MODELS_BY_MODE[mode];
 
   useEffect(() => {
     setStage((s) => (s === "error" ? "idle" : s));
     setError("");
     setProgress(0);
   }, [modelKey, mode]);
-
-  useEffect(() => {
-    if (mode === "enhance" && modelKey === "x4-real") setModelKey("x2-classic");
-  }, [mode, modelKey]);
 
   const run = useCallback(
     async (file: File) => {
@@ -143,43 +164,44 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       setCapped(prepared.capped);
       fileRef.current = file;
 
-      const singleShot = Math.max(prepared.width, prepared.height) <= model.shotLimit;
-      const colsT = Math.ceil(prepared.width / model.tileSize);
-      const rowsT = Math.ceil(prepared.height / model.tileSize);
-      const nTiles = singleShot ? 1 : colsT * rowsT;
+      const colsT = Math.ceil(prepared.width / model.stride);
+      const rowsT = Math.ceil(prepared.height / model.stride);
+      const nTiles = colsT * rowsT;
 
-      if (!singleShot && !hasGpu && nTiles > 48) {
+      if (model.engine === "raw" && !hasGpu && nTiles > 60) {
         setError(
           isEs
-            ? `Esta imagen necesita ${nTiles} teselas en CPU (sin WebGPU) y llevaría más de una hora. Reduce el tamaño de la imagen o usa un navegador con WebGPU (Chrome/Edge).`
-            : `This image needs ${nTiles} CPU tiles (no WebGPU) and would take over an hour. Reduce the image size or use a WebGPU browser (Chrome/Edge).`
+            ? `Esta imagen necesita ${nTiles} teselas en CPU (sin WebGPU) y llevaría demasiado. Reduce el tamaño de la imagen o usa un navegador con WebGPU (Chrome/Edge).`
+            : `This image needs ${nTiles} CPU tiles (no WebGPU) and would take too long. Reduce the image size or use a WebGPU browser (Chrome/Edge).`
         );
         setStage("error");
         return;
       }
 
-      const attempts: Attempt[] = [
-        { device: "wasm", dtype: "q8" },
-        { device: "webgpu", dtype: "fp16" },
-      ];
+      const attempts: Attempt[] = model.engine === "raw"
+        ? [{ device: "wasm" }]
+        : [
+            { device: "wasm", dtype: "q8" },
+            { device: "webgpu", dtype: "fp16" },
+          ];
 
       let lastError = "";
       cancelRef.current = false;
       for (const attempt of attempts) {
         if (cancelRef.current) break;
         try {
-          const hasGpuAttempt = typeof navigator !== "undefined" && "gpu" in navigator;
-          if (attempt.device === "webgpu" && !hasGpuAttempt) continue;
+          const gpuHere = typeof navigator !== "undefined" && "gpu" in navigator;
+          if (attempt.device === "webgpu" && !gpuHere) continue;
           const worker = workerRef.current;
           if (!worker) throw new Error("no-worker");
 
           const t0 = performance.now();
           const result = await runInWorker(
             worker,
-            { bytes: prepared.bytes, modelId: model.id, origin: window.location.origin, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: singleShot ? 0 : model.tileSize, pad: model.pad },
+            { bytes: prepared.bytes, modelId: model.id, engine: model.engine, bgr: model.bgr, origin: window.location.origin, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: model.tileSize, stride: model.stride, ring: model.ring, pad: model.pad },
             (pct, tile, total) => {
               setStage("processing");
-              if (tile && total) setTileInfo(singleShot ? (isEs ? "Procesando imagen completa…" : "Processing full image…") : isEs ? `Tesela ${tile} de ${total}` : `Tile ${tile} of ${total}`);
+              if (tile && total) setTileInfo(isEs ? `Tesela ${tile} de ${total}` : `Tile ${tile} of ${total}`);
               setProgress(pct === 100 && !total ? 100 : pct);
             },
             () => setStage("processing"),
@@ -197,7 +219,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           const outBlob = await new Promise<Blob>((res) => canvas.toBlob((b) => res(b!), "image/png"));
           setResultUrl(URL.createObjectURL(outBlob));
           setResultDims({ w: result.width, h: result.height });
-          setUsedLabel(`${attempt.device === "webgpu" ? "GPU" : "CPU"} · ${mode === "enhance" ? (isEs ? "mejora a resolución original" : "enhance at original size") : `${model.scale}×`}`);
+          setUsedLabel(`${attempt.device === "webgpu" ? "GPU" : "CPU"} · ${model.scale === 1 ? (isEs ? "restauración ×1" : "×1 restore") : `${model.scale}×`}`);
           setStage("done");
           setDivider(50);
           return;
@@ -209,8 +231,8 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       setError(
         lastError.includes("memory") || lastError.includes("allocation")
           ? isEs
-            ? "La imagen agotó la memoria disponible. Prueba el modelo rápido ×2 o reduce el tamaño."
-            : "The image ran out of memory. Try the fast ×2 model or reduce its size."
+            ? "La imagen agotó la memoria disponible. Prueba con una más pequeña."
+            : "The image ran out of memory. Try a smaller one."
           : isEs
             ? `No se pudo procesar la imagen (${lastError}).`
             : `Could not process the image (${lastError}).`
@@ -247,15 +269,6 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
     setTileInfo("");
   }, []);
 
-  const cancel = useCallback(() => {
-    cancelRef.current = true;
-    workerRef.current?.terminate();
-    workerRef.current = new Worker(new URL("./imageUpscale.worker.ts", import.meta.url), { type: "module" });
-    setStage("idle");
-    setProgress(0);
-    setTileInfo("");
-  }, []);
-
   const pointerMove = useCallback((clientX: number) => {
     const el = compareRef.current;
     if (!el || !draggingRef.current) return;
@@ -282,8 +295,8 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
         <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-300/90">
           <FiAlertCircle className="mt-0.5 shrink-0" />
           {isEs
-            ? "La superresolución con IA necesita bastante RAM y CPU: en móvil funciona solo con imágenes pequeñas. Para ×4 recomendamos escritorio."
-            : "AI super-resolution needs plenty of RAM and CPU: on mobile it only works with small images. For ×4 we recommend desktop."}
+            ? "Los modelos de restauración necesitan RAM y CPU considerables: en móvil funciona solo con imágenes pequeñas. Para ×4 recomendamos escritorio."
+            : "Restoration models need serious RAM and CPU: on mobile it only works with small images. For ×4 we recommend desktop."}
         </div>
       )}
 
@@ -298,35 +311,26 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
               <button key={id} onClick={() => setMode(id)} disabled={busy} className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors disabled:opacity-40 ${mode === id ? "border-primary/50 bg-primary/10 text-primary" : "border-border/30 bg-surface/60 text-text-muted hover:text-text"}`}>{label}</button>
             ))}
           </div>
-          <p className="mt-1.5 text-xs text-text-muted/50">
-            {mode === "upscale"
-              ? isEs ? "Multiplica la resolución (×2 o ×4 según el modelo)." : "Multiplies resolution (×2 or ×4 depending on model)."
-              : isEs ? "Mantiene tu resolución actual y aplica el modelo para limpiar y detallar." : "Keeps your current resolution while applying the model to clean and detail."}
-          </p>
         </div>
 
         <div>
           <label className="mb-2 block text-xs text-text-muted/70">{isEs ? "Modelo" : "Model"}</label>
           <div className="flex flex-wrap gap-2">
-            {(Object.keys(MODEL_DEFS) as ModelKey[]).map((k) => {
-              const disabledByMode = mode === "enhance" && k === "x4-real";
-              return (
-                <button
-                  key={k}
-                  onClick={() => setModelKey(k)}
-                  disabled={busy || disabledByMode}
-                  title={disabledByMode ? (isEs ? "Para solo-mejorar usa un modelo ×2 (mismo resultado, mitad de cómputo)" : "Enhance uses a ×2 model (same result, half the compute)") : undefined}
-                  className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors disabled:opacity-30 ${modelKey === k ? "border-primary/50 bg-primary/10 text-primary" : "border-border/30 bg-surface/60 text-text-muted hover:text-text"}`}
-                >
-                  {isEs ? MODEL_DEFS[k].es : MODEL_DEFS[k].en}
-                </button>
-              );
-            })}
+            {availableKeys.map((k) => (
+              <button
+                key={k}
+                onClick={() => setModelKey(k)}
+                disabled={busy}
+                className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors disabled:opacity-40 ${modelKey === k ? "border-primary/50 bg-primary/10 text-primary" : "border-border/30 bg-surface/60 text-text-muted hover:text-text"}`}
+              >
+                {isEs ? MODELS[k].es : MODELS[k].en}
+              </button>
+            ))}
           </div>
           <p className="mt-2 flex items-start gap-1.5 text-xs text-text-muted/60">
             <FiInfo className="mt-0.5 shrink-0" />
             {isEs ? model.descEs : model.descEn}{" "}
-            {isEs ? `Máximo por lado: ${model.maxSide}px.` : `Max side: ${model.maxSide}px.`}
+            {model.scale > 1 && (isEs ? `Salida hasta ${model.maxSide * model.scale}px de lado.` : `Output up to ${model.maxSide * model.scale}px per side.`)}
           </p>
         </div>
 
@@ -351,13 +355,13 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           <p className="text-sm font-medium text-text">
             {stage === "loadingModel"
               ? isEs ? "Descargando modelo IA (primera vez; luego queda en caché)…" : "Downloading AI model (first time; cached afterwards)…"
-              : isEs ? "Procesando… en CPU puede tardar desde segundos hasta varios minutos según tamaño" : "Processing… on CPU this can take seconds to several minutes depending on size"}
+              : isEs ? "Procesando… en CPU puede tardar varios minutos" : "Processing… CPU can take several minutes"}
           </p>
           <div className="mx-auto h-2 w-full max-w-md overflow-hidden rounded-full bg-white/10">
             <div className={`h-full rounded-full bg-primary transition-all duration-300 ${stage === "processing" ? "animate-pulse" : ""}`} style={{ width: `${stage === "loadingModel" ? Math.max(progress, 4) : Math.max(progress, 8)}%` }} />
           </div>
           <p className="flex items-center justify-center gap-1.5 text-xs text-text-muted/70"><FiClock /> {tileInfo || (isEs ? "Preparando…" : "Preparing…")}</p>
-          <button onClick={cancel} className="mx-auto block rounded-lg border border-border/30 bg-surface/60 px-4 py-1.5 text-xs font-medium text-text-muted transition-colors hover:text-text">
+          <button onClick={() => { cancelRef.current = true; workerRef.current?.terminate(); workerRef.current = new Worker(new URL("./imageUpscale.worker.ts", import.meta.url), { type: "module" }); setStage("idle"); setProgress(0); setTileInfo(""); }} className="mx-auto block rounded-lg border border-border/30 bg-surface/60 px-4 py-1.5 text-xs font-medium text-text-muted transition-colors hover:text-text">
             {isEs ? "Cancelar" : "Cancel"}
           </button>
         </div>
