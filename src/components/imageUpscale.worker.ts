@@ -209,12 +209,18 @@ self.onmessage = async (e: MessageEvent) => {
     if (engine === "raw") {
       const hasGpu = typeof navigator !== "undefined" && "gpu" in navigator;
       let useGpu = hasGpu;
+      let gpuTried = false;
       runTile = async (src, inW, inH) => {
         try {
           const session = await getRawSession(origin, modelId, useGpu, inW, progressCb);
-          return await rawUpscale(session, src, scale, bgr);
+          const result = await rawUpscale(session, src, scale, bgr);
+          gpuTried = useGpu;
+          return result;
         } catch (err) {
           if (!useGpu) throw err;
+          if (gpuTried) {
+            throw new Error("gpu-midrun-fail");
+          }
           useGpu = false;
           progressCb(0);
           const session = await getRawSession(origin, modelId, false, inW, progressCb);

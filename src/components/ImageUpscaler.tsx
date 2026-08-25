@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   FiUploadCloud, FiDownload, FiLoader, FiX,
-  FiAlertCircle, FiCpu, FiZap, FiInfo, FiClock,
+  FiAlertCircle, FiCpu, FiZap, FiClock, FiMaximize2, FiFileText,
 } from "react-icons/fi";
 
 interface Props { locale?: string; }
@@ -23,21 +23,21 @@ interface ModelDef {
   pad: number;
   maxSide: number;
   shotLimit: number;
+  mb: number;
   es: string;
   en: string;
   descEs: string;
   descEn: string;
 }
 
-const HF = "Xenova/swin2SR-lightweight-x2-64";
 const NES = "https://huggingface.co/nesaorg";
 
 const MODELS: Record<ModelKey, ModelDef> = {
-  "x4-plksr": { id: `${NES}/4xNomosWebPhoto_RealPLKSR_fp32_opset17/resolve/main/4xNomosWebPhoto_RealPLKSR_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, es: "Fotos web ×4", en: "Web photos ×4", descEs: "RealPLKSR sobre NomosWebPhoto: el favorito de la comunidad para fotos reales. Rápido y ligero.", descEn: "RealPLKSR on NomosWebPhoto: the community favorite for real photos. Fast and light." },
-  "x4-esrgan": { id: `${NES}/4xNomosWebPhoto_esrgan_fp32_opset17/resolve/main/4xNomosWebPhoto_esrgan_fp32_opset17.onnx`, engine: "raw", bgr: true, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, es: "Fotos ×4 ESRGAN", en: "Photos ×4 ESRGAN", descEs: "ESRGAN clásico sobre NomosWebPhoto: texturas más marcadas, más lento.", descEn: "Classic ESRGAN on NomosWebPhoto: stronger textures, slower." },
-  "x2-light": { id: HF, engine: "hf", bgr: false, scale: 2, tileSize: 256, stride: 256, ring: 32, pad: 32, maxSide: 2048, shotLimit: 1024, es: "Capturas ×2", en: "Screenshots ×2", descEs: "Swin2SR ligero: el mejor para capturas, logos e imágenes pequeñas.", descEn: "Light Swin2SR: best for screenshots, logos and small images." },
-  dejpeg: { id: `${NES}/1xDeJPG_realplksr_otf_60_fp32_opset17/resolve/main/1xDeJPG_realplksr_otf_60_fp32_opset17.onnx`, engine: "raw", bgr: true, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 2048, shotLimit: 0, es: "Quitar artefactos JPEG", en: "Remove JPEG artifacts", descEs: "Modelo ×1 dedicado: elimina bloques y zumbido de compresión sin cambiar el tamaño.", descEn: "Dedicated ×1 model: removes compression blocks and buzz without resizing." },
-  denoise: { id: `${NES}/1xDeNoise_realplksr_otf_fp32/resolve/main/1xDeNoise_realplksr_otf_fp32.onnx`, engine: "raw", bgr: true, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 2048, shotLimit: 0, es: "Quitar ruido", en: "Remove noise", descEs: "Modelo ×1 dedicado: limpia grano y ruido manteniendo la resolución.", descEn: "Dedicated ×1 model: cleans grain and noise keeping resolution." },
+  "x4-plksr": { id: `${NES}/4xNomosWebPhoto_RealPLKSR_fp32_opset17/resolve/main/4xNomosWebPhoto_RealPLKSR_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, mb: 28, es: "Normal", en: "Standard", descEs: "El mejor equilibrio para fotos normales.", descEn: "The best balance for regular photos." },
+  "x4-esrgan": { id: `${NES}/4xNomosWebPhoto_esrgan_fp32_opset17/resolve/main/4xNomosWebPhoto_esrgan_fp32_opset17.onnx`, engine: "raw", bgr: true, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, mb: 64, es: "Máxima calidad", en: "Max quality", descEs: "Más detalle en texturas, pero más lento.", descEn: "More texture detail, but slower." },
+  "x2-light": { id: "Xenova/swin2SR-lightweight-x2-64", engine: "hf", bgr: false, scale: 2, tileSize: 256, stride: 256, ring: 32, pad: 32, maxSide: 2048, shotLimit: 1024, mb: 8, es: "Capturas ×2", en: "Screenshots ×2", descEs: "Para capturas, logos e imágenes pequeñas.", descEn: "For screenshots, logos and small images." },
+  dejpeg: { id: `${NES}/1xDeJPG_realplksr_otf_60_fp32_opset17/resolve/main/1xDeJPG_realplksr_otf_60_fp32_opset17.onnx`, engine: "raw", bgr: true, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 2048, shotLimit: 0, mb: 28, es: "Bloques o manchas de compresión", en: "Compression blocks or stains", descEs: "Fotos de WhatsApp, redes sociales o reenviadas muchas veces.", descEn: "Photos from WhatsApp, social media or forwarded many times." },
+  denoise: { id: `${NES}/1xDeNoise_realplksr_otf_fp32/resolve/main/1xDeNoise_realplksr_otf_fp32.onnx`, engine: "raw", bgr: true, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 2048, shotLimit: 0, mb: 28, es: "Grano o ruido", en: "Grain or noise", descEs: "Fotos nocturnas, con poca luz o muy granuladas.", descEn: "Night shots, low-light or very grainy photos." },
 };
 
 const MODELS_BY_MODE: Record<Mode, ModelKey[]> = {
@@ -54,7 +54,6 @@ function runInWorker(
   worker: Worker,
   payload: { bytes: ArrayBuffer; modelId: string; engine: string; bgr: boolean; origin: string; device: string; dtype?: string; scale: number; mode: Mode; tileSize: number; stride: number; ring: number; pad: number },
   onProgress: (pct: number, tile?: number, total?: number) => void,
-  onProcessing: () => void,
 ): Promise<WorkerResult> {
   return new Promise((resolve, reject) => {
     const reqId = ++reqCounter;
@@ -63,7 +62,6 @@ function runInWorker(
       const m = e.data as { type: string; reqId: number; pct?: number; tile?: number; total?: number; data?: ArrayBuffer; width?: number; height?: number; message?: string };
       if (m.reqId !== reqId) return;
       if (m.type === "progress") onProgress(m.pct ?? 0, m.tile, m.total);
-      else if (m.type === "processing") onProcessing();
       else if (m.type === "done") {
         worker.removeEventListener("message", handler);
         resolve({ data: new Uint8ClampedArray(m.data!), width: m.width!, height: m.height! });
@@ -113,6 +111,8 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
   const [progress, setProgress] = useState(0);
   const [tileInfo, setTileInfo] = useState("");
   const [error, setError] = useState("");
+  const [gpuDied, setGpuDied] = useState(false);
+  const [forceCpu, setForceCpu] = useState(false);
   const [mode, setMode] = useState<Mode>("upscale");
   const [modelKey, setModelKey] = useState<ModelKey>("x4-plksr");
   const [origUrl, setOrigUrl] = useState("");
@@ -126,6 +126,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
   const [hasGpu, setHasGpu] = useState(false);
   const [dragOver, setDragOver] = useState(false);
   const [divider, setDivider] = useState(50);
+  const [showTech, setShowTech] = useState(false);
 
   const workerRef = useRef<Worker | null>(null);
   const fileRef = useRef<File | null>(null);
@@ -133,21 +134,25 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
   const draggingRef = useRef(false);
   const cancelRef = useRef(false);
 
+  const spawnWorker = useCallback(() => {
+    workerRef.current?.terminate();
+    const w = new Worker(new URL("./imageUpscale.worker.ts", import.meta.url), { type: "module" });
+    workerRef.current = w;
+  }, []);
+
   useEffect(() => {
     setIsMobile(window.matchMedia("(max-width: 639px)").matches);
     setHasGpu(typeof navigator !== "undefined" && "gpu" in navigator);
-    const w = new Worker(new URL("./imageUpscale.worker.ts", import.meta.url), { type: "module" });
-    workerRef.current = w;
-    return () => w.terminate();
-  }, []);
+    spawnWorker();
+    return () => workerRef.current?.terminate();
+  }, [spawnWorker]);
 
   const model = MODELS[modelKey];
   const availableKeys = MODELS_BY_MODE[mode];
 
   useEffect(() => {
-    setStage((s) => (s === "error" ? "idle" : s));
+    if (stage !== "idle" && stage !== "error" && stage !== "done") return;
     setError("");
-    setProgress(0);
   }, [modelKey, mode]);
 
   const run = useCallback(
@@ -157,6 +162,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       setTileInfo("");
       setError("");
       setResultUrl("");
+      setGpuDied(false);
 
       const prepared = await downscaleToCap(file, model.maxSide);
       setOrigUrl(prepared.url);
@@ -168,22 +174,24 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       const rowsT = Math.ceil(prepared.height / model.stride);
       const nTiles = colsT * rowsT;
 
-      if (model.engine === "raw" && !hasGpu && nTiles > 60) {
+      if (model.engine === "raw" && !hasGpu && !forceCpu && nTiles > 60) {
         setError(
           isEs
-            ? `Esta imagen necesita ${nTiles} teselas en CPU (sin WebGPU) y llevaría demasiado. Reduce el tamaño de la imagen o usa un navegador con WebGPU (Chrome/Edge).`
-            : `This image needs ${nTiles} CPU tiles (no WebGPU) and would take too long. Reduce the image size or use a WebGPU browser (Chrome/Edge).`
+            ? `Tu navegador no tiene WebGPU y esta imagen necesita ${nTiles} pasos de procesamiento (más de una hora). Prueba con una imagen más pequeña o usa Chrome/Edge.`
+            : `Your browser has no WebGPU and this image needs ${nTiles} processing steps (over an hour). Try a smaller image or use Chrome/Edge.`
         );
         setStage("error");
         return;
       }
 
       const attempts: Attempt[] = model.engine === "raw"
-        ? [{ device: "wasm" }]
-        : [
-            { device: "wasm", dtype: "q8" },
-            { device: "webgpu", dtype: "fp16" },
-          ];
+        ? forceCpu || !hasGpu ? [{ device: "wasm" }] : [{ device: "webgpu" }]
+        : forceCpu
+          ? [{ device: "wasm", dtype: "q8" }]
+          : [
+              { device: "wasm", dtype: "q8" },
+              { device: "webgpu", dtype: "fp16" },
+            ];
 
       let lastError = "";
       cancelRef.current = false;
@@ -201,10 +209,9 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
             { bytes: prepared.bytes, modelId: model.id, engine: model.engine, bgr: model.bgr, origin: window.location.origin, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: model.tileSize, stride: model.stride, ring: model.ring, pad: model.pad },
             (pct, tile, total) => {
               setStage("processing");
-              if (tile && total) setTileInfo(isEs ? `Tesela ${tile} de ${total}` : `Tile ${tile} of ${total}`);
+              if (tile && total) setTileInfo(isEs ? `Paso ${tile} de ${total}` : `Step ${tile} of ${total}`);
               setProgress(pct === 100 && !total ? 100 : pct);
             },
-            () => setStage("processing"),
           );
           const secs = Math.round((performance.now() - t0) / 1000);
           setElapsed(secs >= 60 ? `${Math.floor(secs / 60)}m ${secs % 60}s` : `${secs}s`);
@@ -219,12 +226,23 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           const outBlob = await new Promise<Blob>((res) => canvas.toBlob((b) => res(b!), "image/png"));
           setResultUrl(URL.createObjectURL(outBlob));
           setResultDims({ w: result.width, h: result.height });
-          setUsedLabel(`${attempt.device === "webgpu" ? "GPU" : "CPU"} · ${model.scale === 1 ? (isEs ? "restauración ×1" : "×1 restore") : `${model.scale}×`}`);
+          setUsedLabel(`${attempt.device === "webgpu" ? "GPU" : "CPU"}`);
           setStage("done");
           setDivider(50);
           return;
         } catch (err) {
           lastError = err instanceof Error ? err.message : String(err);
+          if (lastError === "gpu-midrun-fail") {
+            setGpuDied(true);
+            setError(
+              isEs
+                ? "Tu gráfica se quedó sin memoria a mitad del proceso. Puedes terminarlo en CPU (puede tardar bastante) o probar con una imagen más pequeña."
+                : "Your GPU ran out of memory mid-process. You can finish on CPU (it may take a while) or try a smaller image."
+            );
+            setStage("error");
+            return;
+          }
+          spawnWorker();
         }
       }
 
@@ -239,13 +257,14 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       );
       setStage("error");
     },
-    [model, mode, isEs]
+    [model, mode, isEs, hasGpu, forceCpu, spawnWorker]
   );
 
   const onFile = useCallback(
     (file: File | undefined) => {
       if (!file || !file.type.startsWith("image/")) return;
       setOrigUrl("");
+      setForceCpu(false);
       void run(file);
     },
     [run]
@@ -267,6 +286,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
     setError("");
     setProgress(0);
     setTileInfo("");
+    setGpuDied(false);
   }, []);
 
   const pointerMove = useCallback((clientX: number) => {
@@ -295,43 +315,47 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
         <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-relaxed text-amber-300/90">
           <FiAlertCircle className="mt-0.5 shrink-0" />
           {isEs
-            ? "Los modelos de restauración necesitan RAM y CPU considerables: en móvil funciona solo con imágenes pequeñas. Para ×4 recomendamos escritorio."
-            : "Restoration models need serious RAM and CPU: on mobile it only works with small images. For ×4 we recommend desktop."}
+            ? "Estos procesos necesitan un ordenador con suficiente memoria. En móvil funcionan solo con imágenes pequeñas."
+            : "These processes need a computer with enough memory. On mobile they only work with small images."}
         </div>
       )}
 
       <div className="space-y-4 rounded-xl border border-border/20 bg-surface/30 p-4">
         <div>
-          <label className="mb-2 block text-xs text-text-muted/70">{isEs ? "¿Qué quieres hacer?" : "What do you want to do?"}</label>
-          <div className="flex flex-wrap gap-2">
+          <label className="mb-2 block text-sm font-medium text-text">{isEs ? "1. ¿Qué quieres hacer?" : "1. What do you want to do?"}</label>
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
             {([
-              ["upscale", isEs ? "Ampliar resolución" : "Upscale resolution"],
-              ["enhance", isEs ? "Solo mejorar calidad" : "Enhance only"],
-            ] as const).map(([id, label]) => (
-              <button key={id} onClick={() => setMode(id)} disabled={busy} className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors disabled:opacity-40 ${mode === id ? "border-primary/50 bg-primary/10 text-primary" : "border-border/30 bg-surface/60 text-text-muted hover:text-text"}`}>{label}</button>
+              ["upscale", FiMaximize2, isEs ? "Ampliar mi foto" : "Enlarge my photo", isEs ? "Hacerla ×4 más grande y nítida" : "Make it ×4 bigger and sharp"],
+              ["enhance", FiFileText, isEs ? "Mejorar mi foto" : "Enhance my photo", isEs ? "Mismo tamaño, mejor calidad" : "Same size, better quality"],
+            ] as const).map(([id, Icon, title, desc]) => (
+              <button key={id} onClick={() => setMode(id)} disabled={busy} className={`flex items-start gap-3 rounded-xl border p-3.5 text-left transition-colors disabled:opacity-40 ${mode === id ? "border-primary/60 bg-primary/10" : "border-border/30 bg-surface/40 hover:border-primary/30"}`}>
+                <Icon className={`mt-0.5 text-lg ${mode === id ? "text-primary" : "text-text-muted"}`} />
+                <span>
+                  <span className={`block text-sm font-semibold ${mode === id ? "text-primary" : "text-text"}`}>{title}</span>
+                  <span className="block text-xs text-text-muted/70">{desc}</span>
+                </span>
+              </button>
             ))}
           </div>
         </div>
 
         <div>
-          <label className="mb-2 block text-xs text-text-muted/70">{isEs ? "Modelo" : "Model"}</label>
-          <div className="flex flex-wrap gap-2">
-            {availableKeys.map((k) => (
-              <button
-                key={k}
-                onClick={() => setModelKey(k)}
-                disabled={busy}
-                className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors disabled:opacity-40 ${modelKey === k ? "border-primary/50 bg-primary/10 text-primary" : "border-border/30 bg-surface/60 text-text-muted hover:text-text"}`}
-              >
-                {isEs ? MODELS[k].es : MODELS[k].en}
-              </button>
-            ))}
+          <label className="mb-2 block text-sm font-medium text-text">{isEs ? "2. Cuéntame tu foto" : "2. Tell me about your photo"}</label>
+          <div className="space-y-2">
+            {availableKeys.map((k) => {
+              const m = MODELS[k];
+              const active = modelKey === k;
+              return (
+                <button key={k} onClick={() => setModelKey(k)} disabled={busy} className={`flex w-full items-start gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-40 ${active ? "border-primary/60 bg-primary/10" : "border-border/30 bg-surface/40 hover:border-primary/30"}`}>
+                  <span className={`mt-1 h-4 w-4 shrink-0 rounded-full border-2 ${active ? "border-primary bg-primary" : "border-text-muted/40"}`} />
+                  <span>
+                    <span className={`block text-sm font-semibold ${active ? "text-primary" : "text-text"}`}>{isEs ? m.es : m.en}</span>
+                    <span className="block text-xs text-text-muted/70">{isEs ? m.descEs : m.descEn}</span>
+                  </span>
+                </button>
+              );
+            })}
           </div>
-          <p className="mt-2 flex items-start gap-1.5 text-xs text-text-muted/60">
-            <FiInfo className="mt-0.5 shrink-0" />
-            {isEs ? model.descEs : model.descEn}{" "}
-            {model.scale > 1 && (isEs ? `Salida hasta ${model.maxSide * model.scale}px de lado.` : `Output up to ${model.maxSide * model.scale}px per side.`)}
-          </p>
         </div>
 
         {!origUrl && (
@@ -342,8 +366,8 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
             className={`flex cursor-pointer flex-col items-center gap-3 rounded-xl border-2 border-dashed p-10 text-center transition-colors ${dragOver ? "border-primary/60 bg-primary/5" : "border-border/30 hover:border-primary/40"}`}
           >
             <FiUploadCloud className="text-3xl text-text-muted/60" />
-            <span className="text-sm font-medium text-text">{isEs ? "Suelta una imagen o haz clic" : "Drop an image or click"}</span>
-            <span className="text-xs text-text-muted/60">JPG · PNG · WebP — {isEs ? "se procesa en tu navegador, nunca se sube" : "processed in your browser, never uploaded"}</span>
+            <span className="text-sm font-semibold text-text">{isEs ? "3. Suelta tu foto aquí" : "3. Drop your photo here"}</span>
+            <span className="text-xs text-text-muted/60">JPG · PNG · WebP — {isEs ? "se procesa en tu navegador, nunca se sube a internet" : "processed in your browser, never uploaded"}</span>
             <input type="file" accept="image/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
           </label>
         )}
@@ -354,27 +378,37 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           <FiLoader className="mx-auto animate-spin text-2xl text-primary" />
           <p className="text-sm font-medium text-text">
             {stage === "loadingModel"
-              ? isEs ? "Descargando modelo IA (primera vez; luego queda en caché)…" : "Downloading AI model (first time; cached afterwards)…"
-              : isEs ? "Procesando… en CPU puede tardar varios minutos" : "Processing… CPU can take several minutes"}
+              ? isEs ? "Preparando herramientas de IA (solo la primera vez)…" : "Preparing AI tools (first time only)…"
+              : isEs ? "Trabajando en tu foto…" : "Working on your photo…"}
           </p>
           <div className="mx-auto h-2 w-full max-w-md overflow-hidden rounded-full bg-white/10">
             <div className={`h-full rounded-full bg-primary transition-all duration-300 ${stage === "processing" ? "animate-pulse" : ""}`} style={{ width: `${stage === "loadingModel" ? Math.max(progress, 4) : Math.max(progress, 8)}%` }} />
           </div>
           <p className="flex items-center justify-center gap-1.5 text-xs text-text-muted/70"><FiClock /> {tileInfo || (isEs ? "Preparando…" : "Preparing…")}</p>
-          <button onClick={() => { cancelRef.current = true; workerRef.current?.terminate(); workerRef.current = new Worker(new URL("./imageUpscale.worker.ts", import.meta.url), { type: "module" }); setStage("idle"); setProgress(0); setTileInfo(""); }} className="mx-auto block rounded-lg border border-border/30 bg-surface/60 px-4 py-1.5 text-xs font-medium text-text-muted transition-colors hover:text-text">
+          <button onClick={() => { cancelRef.current = true; spawnWorker(); setStage("idle"); setProgress(0); setTileInfo(""); }} className="mx-auto block rounded-lg border border-border/30 bg-surface/60 px-4 py-1.5 text-xs font-medium text-text-muted transition-colors hover:text-text">
             {isEs ? "Cancelar" : "Cancel"}
           </button>
         </div>
       )}
 
       {error && (
-        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-sm text-red-400">
-          <FiAlertCircle className="shrink-0" /> {error}
-          {fileRef.current && (
-            <button onClick={() => fileRef.current && void run(fileRef.current)} className="ml-auto rounded-lg border border-red-400/40 px-3 py-1.5 text-xs font-semibold text-red-300 transition-colors hover:bg-red-500/20">
-              {isEs ? "Reintentar" : "Retry"}
+        <div className="space-y-3 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+          <p className="flex items-start gap-2"><FiAlertCircle className="mt-0.5 shrink-0" /> {error}</p>
+          <div className="flex flex-wrap gap-2">
+            {gpuDied && fileRef.current && (
+              <button onClick={() => { setForceCpu(true); const f = fileRef.current; if (f) void run(f); }} className="flex items-center gap-1.5 rounded-lg border border-amber-400/40 bg-amber-500/10 px-3 py-1.5 text-xs font-semibold text-amber-300 transition-colors hover:bg-amber-500/20">
+                <FiCpu /> {isEs ? "Continuar en CPU (lento)" : "Continue on CPU (slow)"}
+              </button>
+            )}
+            {fileRef.current && (
+              <button onClick={() => { const f = fileRef.current; reset(); if (f) onFile(f); }} className="rounded-lg border border-red-400/40 px-3 py-1.5 text-xs font-semibold text-red-300 transition-colors hover:bg-red-500/20">
+                {isEs ? "Reintentar" : "Retry"}
+              </button>
+            )}
+            <button onClick={reset} className="rounded-lg border border-border/30 px-3 py-1.5 text-xs font-medium text-text-muted transition-colors hover:text-text">
+              {isEs ? "Empezar de nuevo" : "Start over"}
             </button>
-          )}
+          </div>
         </div>
       )}
 
@@ -401,29 +435,38 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
                 <div className="absolute top-1/2 left-1/2 h-9 w-9 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-primary bg-black/70" />
               </div>
               <span className="absolute top-3 left-3 rounded bg-black/60 px-2 py-1 text-xs font-medium text-white">
-                {isEs ? "Original" : "Original"} · {origDims.w}×{origDims.h}
+                {isEs ? "Antes" : "Before"} · {origDims.w}×{origDims.h}
               </span>
               <span className="absolute top-3 right-3 rounded bg-primary/80 px-2 py-1 text-xs font-bold text-white">
-                {mode === "enhance" ? (isEs ? "Mejorada" : "Enhanced") : "IA"} · {resultDims.w}×{resultDims.h}
+                {isEs ? "Después" : "After"} · {resultDims.w}×{resultDims.h}
               </span>
             </div>
           </div>
 
-          <p className="text-center text-xs text-text-muted/50">{isEs ? "Arrastra el divisor para comparar antes y después." : "Drag the divider to compare before and after."}</p>
+          <p className="text-center text-xs text-text-muted/50">{isEs ? "Arrastra la línea para comparar el antes y el después." : "Drag the line to compare before and after."}</p>
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/20 bg-surface/30 p-4">
             <div className="text-xs text-text-muted">
               <p className="flex items-center gap-1.5"><FiZap className="text-primary" /> {usedLabel}</p>
-              <p className="flex items-center gap-1.5 mt-1"><FiClock /> {isEs ? "Tiempo de proceso" : "Process time"}: {elapsed}</p>
-              {capped && <p className="flex items-center gap-1.5 mt-1"><FiCpu /> {isEs ? "Entrada reducida al límite del modelo antes de procesar." : "Input downscaled to the model limit before processing."}</p>}
+              <p className="flex items-center gap-1.5 mt-1"><FiClock /> {isEs ? "Tiempo" : "Time"}: {elapsed}</p>
+              {capped && <p className="flex items-center gap-1.5 mt-1"><FiCpu /> {isEs ? "La imagen se ajustó al tamaño máximo antes de procesar." : "The image was resized to the maximum before processing."}</p>}
             </div>
             <div className="flex gap-2">
-              <button onClick={reset} className="flex items-center gap-1.5 rounded-lg border border-border/30 bg-surface/60 px-3 py-2 text-xs font-medium text-text-muted transition-colors hover:text-text"><FiX /> {isEs ? "Nueva imagen" : "New image"}</button>
-              <button onClick={download} className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"><FiDownload /> PNG · {resultDims.w}×{resultDims.h}</button>
+              <button onClick={reset} className="flex items-center gap-1.5 rounded-lg border border-border/30 bg-surface/60 px-3 py-2 text-xs font-medium text-text-muted transition-colors hover:text-text"><FiX /> {isEs ? "Otra foto" : "Another photo"}</button>
+              <button onClick={download} className="flex items-center gap-1.5 rounded-lg bg-primary px-4 py-2 text-sm font-semibold text-white transition-opacity hover:opacity-90"><FiDownload /> {isEs ? "Descargar" : "Download"} PNG · {resultDims.w}×{resultDims.h}</button>
             </div>
           </div>
         </>
       )}
+
+      <details className="rounded-xl border border-border/20 bg-surface/30 p-4">
+        <summary className="cursor-pointer text-xs font-medium text-text-muted/70">{isEs ? "Detalles técnicos" : "Technical details"}</summary>
+        <div className="mt-3 space-y-1.5 text-xs leading-relaxed text-text-muted/60">
+          <p>{isEs ? "Modelo actual:" : "Current model:"} <span className="font-mono">{model.id.split("/").pop()}</span> ({model.mb}MB)</p>
+          <p>{isEs ? "Motor:" : "Engine:"} {model.engine === "raw" ? "ONNX Runtime Web" : "transformers.js"} · {hasGpu ? (isEs ? "WebGPU disponible" : "WebGPU available") : isEs ? "solo CPU" : "CPU only"}</p>
+          <p>{isEs ? "Los modelos proceden de la comunidad de superresolución (NomosWebPhoto por Phips, Swin2SR por Microsoft Research) convertidos a ONNX." : "Models come from the super-resolution community (NomosWebPhoto by Phips, Swin2SR by Microsoft Research) converted to ONNX."}</p>
+        </div>
+      </details>
     </div>
   );
 }
