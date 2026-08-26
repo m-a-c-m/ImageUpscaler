@@ -34,10 +34,10 @@ const NES = "https://huggingface.co/nesaorg";
 
 const MODELS: Record<ModelKey, ModelDef> = {
   "x4-plksr": { id: `${NES}/4xNomosWebPhoto_RealPLKSR_fp32_opset17/resolve/main/4xNomosWebPhoto_RealPLKSR_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, mb: 28, es: "Normal", en: "Standard", descEs: "El mejor equilibrio para fotos normales.", descEn: "The best balance for regular photos." },
-  "x4-esrgan": { id: `${NES}/4xNomosWebPhoto_esrgan_fp32_opset17/resolve/main/4xNomosWebPhoto_esrgan_fp32_opset17.onnx`, engine: "raw", bgr: true, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, mb: 64, es: "Máxima calidad", en: "Max quality", descEs: "Más detalle en texturas, pero más lento.", descEn: "More texture detail, but slower." },
+  "x4-esrgan": { id: `${NES}/4xNomosWebPhoto_esrgan_fp32_opset17/resolve/main/4xNomosWebPhoto_esrgan_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, mb: 64, es: "Máxima calidad", en: "Max quality", descEs: "Más detalle en texturas, pero más lento.", descEn: "More texture detail, but slower." },
   "x2-light": { id: "Xenova/swin2SR-lightweight-x2-64", engine: "hf", bgr: false, scale: 2, tileSize: 256, stride: 256, ring: 32, pad: 32, maxSide: 2048, shotLimit: 1024, mb: 8, es: "Capturas ×2", en: "Screenshots ×2", descEs: "Para capturas, logos e imágenes pequeñas.", descEn: "For screenshots, logos and small images." },
-  dejpeg: { id: `${NES}/1xDeJPG_realplksr_otf_60_fp32_opset17/resolve/main/1xDeJPG_realplksr_otf_60_fp32_opset17.onnx`, engine: "raw", bgr: true, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 2048, shotLimit: 0, mb: 28, es: "Bloques o manchas de compresión", en: "Compression blocks or stains", descEs: "Fotos de WhatsApp, redes sociales o reenviadas muchas veces.", descEn: "Photos from WhatsApp, social media or forwarded many times." },
-  denoise: { id: `${NES}/1xDeNoise_realplksr_otf_fp32/resolve/main/1xDeNoise_realplksr_otf_fp32.onnx`, engine: "raw", bgr: true, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 2048, shotLimit: 0, mb: 28, es: "Grano o ruido", en: "Grain or noise", descEs: "Fotos nocturnas, con poca luz o muy granuladas.", descEn: "Night shots, low-light or very grainy photos." },
+  dejpeg: { id: `${NES}/1xDeJPG_realplksr_otf_60_fp32_opset17/resolve/main/1xDeJPG_realplksr_otf_60_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 4096, shotLimit: 0, mb: 28, es: "Bloques o manchas de compresión", en: "Compression blocks or stains", descEs: "Fotos de WhatsApp, redes sociales o reenviadas muchas veces.", descEn: "Photos from WhatsApp, social media or forwarded many times." },
+  denoise: { id: `${NES}/1xDeNoise_realplksr_otf_fp32/resolve/main/1xDeNoise_realplksr_otf_fp32.onnx`, engine: "raw", bgr: false, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 4096, shotLimit: 0, mb: 28, es: "Grano o ruido", en: "Grain or noise", descEs: "Fotos nocturnas, con poca luz o muy granuladas.", descEn: "Night shots, low-light or very grainy photos." },
 };
 
 const MODELS_BY_MODE: Record<Mode, ModelKey[]> = {
@@ -54,17 +54,17 @@ function runInWorker(
   worker: Worker,
   payload: { bytes: ArrayBuffer; modelId: string; engine: string; bgr: boolean; origin: string; device: string; dtype?: string; scale: number; mode: Mode; tileSize: number; stride: number; ring: number; pad: number },
   onProgress: (pct: number, tile?: number, total?: number) => void,
-): Promise<WorkerResult> {
+): Promise<WorkerResult & { device?: string }> {
   return new Promise((resolve, reject) => {
     const reqId = ++reqCounter;
     const buf = payload.bytes.slice(0);
     const handler = (e: MessageEvent) => {
-      const m = e.data as { type: string; reqId: number; pct?: number; tile?: number; total?: number; data?: ArrayBuffer; width?: number; height?: number; message?: string };
+      const m = e.data as { type: string; reqId: number; pct?: number; tile?: number; total?: number; data?: ArrayBuffer; width?: number; height?: number; message?: string; device?: string };
       if (m.reqId !== reqId) return;
       if (m.type === "progress") onProgress(m.pct ?? 0, m.tile, m.total);
       else if (m.type === "done") {
         worker.removeEventListener("message", handler);
-        resolve({ data: new Uint8ClampedArray(m.data!), width: m.width!, height: m.height! });
+        resolve({ data: new Uint8ClampedArray(m.data!), width: m.width!, height: m.height!, device: m.device });
       } else if (m.type === "error") {
         worker.removeEventListener("message", handler);
         reject(new Error(m.message ?? "error"));
@@ -80,7 +80,7 @@ function runInWorker(
   });
 }
 
-async function downscaleToCap(file: File, maxSide: number): Promise<{ bytes: ArrayBuffer; url: string; width: number; height: number; capped: boolean }> {
+async function downscaleToCap(file: File, maxSide: number): Promise<{ bytes: ArrayBuffer; url: string; width: number; height: number; srcW: number; srcH: number; capped: boolean }> {
   const bmp = await createImageBitmap(file);
   const w = bmp.width;
   const h = bmp.height;
@@ -88,7 +88,7 @@ async function downscaleToCap(file: File, maxSide: number): Promise<{ bytes: Arr
   if (scale >= 1) {
     const buf = await file.arrayBuffer();
     bmp.close();
-    return { bytes: buf, url: URL.createObjectURL(file), width: w, height: h, capped: false };
+    return { bytes: buf, url: URL.createObjectURL(file), width: w, height: h, srcW: w, srcH: h, capped: false };
   }
   const nw = Math.round(w * scale);
   const nh = Math.round(h * scale);
@@ -101,7 +101,7 @@ async function downscaleToCap(file: File, maxSide: number): Promise<{ bytes: Arr
   bmp.close();
   const blob = await new Promise<Blob>((res) => c.toBlob((b) => res(b!), "image/png"));
   const buf = await blob.arrayBuffer();
-  return { bytes: buf, url: URL.createObjectURL(blob), width: nw, height: nh, capped: true };
+  return { bytes: buf, url: URL.createObjectURL(blob), width: nw, height: nh, srcW: w, srcH: h, capped: true };
 }
 
 export default function ImageUpscaler({ locale = "es" }: Props) {
@@ -119,6 +119,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
   const [resultUrl, setResultUrl] = useState("");
   const [origDims, setOrigDims] = useState({ w: 0, h: 0 });
   const [resultDims, setResultDims] = useState({ w: 0, h: 0 });
+  const [srcDims, setSrcDims] = useState({ w: 0, h: 0 });
   const [usedLabel, setUsedLabel] = useState("");
   const [elapsed, setElapsed] = useState("");
   const [capped, setCapped] = useState(false);
@@ -151,6 +152,11 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
   const availableKeys = MODELS_BY_MODE[mode];
 
   useEffect(() => {
+    const keys = MODELS_BY_MODE[mode];
+    setModelKey((k) => (keys.includes(k) ? k : keys[0]));
+  }, [mode]);
+
+  useEffect(() => {
     if (stage !== "idle" && stage !== "error" && stage !== "done") return;
     setError("");
   }, [modelKey, mode]);
@@ -167,6 +173,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       const prepared = await downscaleToCap(file, model.maxSide);
       setOrigUrl(prepared.url);
       setOrigDims({ w: prepared.width, h: prepared.height });
+      setSrcDims({ w: prepared.srcW, h: prepared.srcH });
       setCapped(prepared.capped);
       fileRef.current = file;
 
@@ -226,7 +233,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           const outBlob = await new Promise<Blob>((res) => canvas.toBlob((b) => res(b!), "image/png"));
           setResultUrl(URL.createObjectURL(outBlob));
           setResultDims({ w: result.width, h: result.height });
-          setUsedLabel(`${attempt.device === "webgpu" ? "GPU" : "CPU"}`);
+          setUsedLabel(`${(result.device ?? attempt.device) === "webgpu" ? "GPU" : "CPU"}`);
           setStage("done");
           setDivider(50);
           return;
@@ -449,7 +456,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
             <div className="text-xs text-text-muted">
               <p className="flex items-center gap-1.5"><FiZap className="text-primary" /> {usedLabel}</p>
               <p className="flex items-center gap-1.5 mt-1"><FiClock /> {isEs ? "Tiempo" : "Time"}: {elapsed}</p>
-              {capped && <p className="flex items-center gap-1.5 mt-1"><FiCpu /> {isEs ? "La imagen se ajustó al tamaño máximo antes de procesar." : "The image was resized to the maximum before processing."}</p>}
+              {capped && <p className="flex items-center gap-1.5 mt-1"><FiCpu /> {isEs ? `Tu foto original es de ${srcDims.w}×${srcDims.h} y se ajustó a ${origDims.w}×${origDims.h} antes de procesar.` : `Your original photo is ${srcDims.w}×${srcDims.h} and was resized to ${origDims.w}×${origDims.h} before processing.`}</p>}
             </div>
             <div className="flex gap-2">
               <button onClick={reset} className="flex items-center gap-1.5 rounded-lg border border-border/30 bg-surface/60 px-3 py-2 text-xs font-medium text-text-muted transition-colors hover:text-text"><FiX /> {isEs ? "Otra foto" : "Another photo"}</button>

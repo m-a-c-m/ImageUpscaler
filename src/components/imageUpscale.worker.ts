@@ -132,21 +132,24 @@ function rawUpscale(
     nchw[px + i] = img.data[i * 4 + 1] / 255;
     nchw[2 * px + i] = img.data[i * 4 + (bgr ? 0 : 2)] / 255;
   }
-  return session.run({ [session.inputNames[0]]: new ort.Tensor("float32", nchw, [1, 3, size, h8]) }).then((res) => {
+  return session.run({ [session.inputNames[0]]: new ort.Tensor("float32", nchw, [1, 3, h8, size]) }).then((res) => {
     const out = res[session.outputNames[0]];
     const od = out.dims as number[];
     const outW = od[3];
     const outH = od[2];
     const data = decodeMaybeFp16(out);
     if (!outputIsSane(data)) throw new Error("gpu-output-invalid");
+    if (outW !== size * scale || outH !== h8 * scale) {
+      throw new Error(`unexpected-output-size:${outW}x${outH}:expected:${size * scale}x${h8 * scale}`);
+    }
     const c = new OffscreenCanvas(outW, outH);
     const cctx = c.getContext("2d")!;
     const oimg = cctx.createImageData(outW, outH);
     const opx = outW * outH;
     for (let i = 0; i < opx; i++) {
       oimg.data[i * 4 + (bgr ? 2 : 0)] = Math.max(0, Math.min(255, data[i] * 255));
-      oimg.data[i * 4 + 1] = Math.max(0, Math.min(255, data[px + i] * 255));
-      oimg.data[i * 4 + (bgr ? 0 : 2)] = Math.max(0, Math.min(255, data[2 * px + i] * 255));
+      oimg.data[i * 4 + 1] = Math.max(0, Math.min(255, data[opx + i] * 255));
+      oimg.data[i * 4 + (bgr ? 0 : 2)] = Math.max(0, Math.min(255, data[2 * opx + i] * 255));
       oimg.data[i * 4 + 3] = 255;
     }
     cctx.putImageData(oimg, 0, 0);
@@ -205,10 +208,12 @@ self.onmessage = async (e: MessageEvent) => {
 
     let runTile: (src: OffscreenCanvas, inW: number, inH: number) => Promise<OffscreenCanvas>;
     const progressCb = (pct: number) => self.postMessage({ type: "progress", reqId, pct });
+    let usedDevice: "webgpu" | "wasm" = engine === "raw" ? device : device;
 
     if (engine === "raw") {
       const hasGpu = typeof navigator !== "undefined" && "gpu" in navigator;
-      let useGpu = hasGpu;
+      let useGpu = hasGpu && device === "webgpu";
+      usedDevice = useGpu ? "webgpu" : "wasm";
       let gpuTried = false;
       runTile = async (src, inW, inH) => {
         try {
@@ -222,6 +227,7 @@ self.onmessage = async (e: MessageEvent) => {
             throw new Error("gpu-midrun-fail");
           }
           useGpu = false;
+          usedDevice = "wasm";
           progressCb(0);
           const session = await getRawSession(origin, modelId, false, inW, progressCb);
           return rawUpscale(session, src, scale, bgr);
@@ -334,7 +340,7 @@ self.onmessage = async (e: MessageEvent) => {
     const fh = finalCanvas.height;
     const imageData = fctx.getImageData(0, 0, fw, fh);
     const buf = imageData.data.buffer as ArrayBuffer;
-    self.postMessage({ type: "done", reqId, data: buf, width: fw, height: fh }, [buf]);
+    self.postMessage({ type: "done", reqId, data: buf, width: fw, height: fh, device: usedDevice }, [buf]);
   } catch (err) {
     if (engine === "hf") delete hfCache[`${modelId}::${device}`];
     for (const k of Object.keys(ortSessions)) if (k.includes(modelId)) delete ortSessions[k];
