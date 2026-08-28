@@ -52,19 +52,19 @@ interface WorkerResult { data: Uint8ClampedArray; width: number; height: number;
 
 function runInWorker(
   worker: Worker,
-  payload: { bytes: ArrayBuffer; modelId: string; engine: string; bgr: boolean; origin: string; device: string; dtype?: string; scale: number; mode: Mode; tileSize: number; stride: number; ring: number; pad: number },
+  payload: { bytes: ArrayBuffer; modelId: string; engine: string; bgr: boolean; origin: string; device: string; dtype?: string; scale: number; mode: Mode; tileSize: number; stride: number; ring: number; pad: number; preClean?: { modelId: string; bgr: boolean } },
   onProgress: (pct: number, tile?: number, total?: number) => void,
-): Promise<WorkerResult & { device?: string }> {
+): Promise<WorkerResult & { device?: string; pre?: boolean }> {
   return new Promise((resolve, reject) => {
     const reqId = ++reqCounter;
     const buf = payload.bytes.slice(0);
     const handler = (e: MessageEvent) => {
-      const m = e.data as { type: string; reqId: number; pct?: number; tile?: number; total?: number; data?: ArrayBuffer; width?: number; height?: number; message?: string; device?: string };
+      const m = e.data as { type: string; reqId: number; pct?: number; tile?: number; total?: number; data?: ArrayBuffer; width?: number; height?: number; message?: string; device?: string; pre?: boolean };
       if (m.reqId !== reqId) return;
       if (m.type === "progress") onProgress(m.pct ?? 0, m.tile, m.total);
       else if (m.type === "done") {
         worker.removeEventListener("message", handler);
-        resolve({ data: new Uint8ClampedArray(m.data!), width: m.width!, height: m.height!, device: m.device });
+        resolve({ data: new Uint8ClampedArray(m.data!), width: m.width!, height: m.height!, device: m.device, pre: m.pre });
       } else if (m.type === "error") {
         worker.removeEventListener("message", handler);
         reject(new Error(m.message ?? "error"));
@@ -72,7 +72,7 @@ function runInWorker(
     };
     worker.addEventListener("message", handler);
     try {
-      worker.postMessage({ type: "run", reqId, bytes: buf, modelId: payload.modelId, engine: payload.engine, bgr: payload.bgr, origin: payload.origin, device: payload.device, dtype: payload.dtype, scale: payload.scale, mode: payload.mode, tileSize: payload.tileSize, stride: payload.stride, ring: payload.ring, pad: payload.pad }, [buf]);
+      worker.postMessage({ type: "run", reqId, bytes: buf, modelId: payload.modelId, engine: payload.engine, bgr: payload.bgr, origin: payload.origin, device: payload.device, dtype: payload.dtype, scale: payload.scale, mode: payload.mode, tileSize: payload.tileSize, stride: payload.stride, ring: payload.ring, pad: payload.pad, preClean: payload.preClean }, [buf]);
     } catch (err) {
       worker.removeEventListener("message", handler);
       reject(err instanceof Error ? err : new Error(String(err)));
@@ -121,6 +121,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
   const [resultDims, setResultDims] = useState({ w: 0, h: 0 });
   const [srcDims, setSrcDims] = useState({ w: 0, h: 0 });
   const [usedLabel, setUsedLabel] = useState("");
+  const [resultPre, setResultPre] = useState(false);
   const [elapsed, setElapsed] = useState("");
   const [capped, setCapped] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
@@ -169,6 +170,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       setError("");
       setResultUrl("");
       setGpuDied(false);
+      setResultPre(false);
 
       const prepared = await downscaleToCap(file, model.maxSide);
       setOrigUrl(prepared.url);
@@ -211,9 +213,10 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           if (!worker) throw new Error("no-worker");
 
           const t0 = performance.now();
+          const usePreClean = mode === "upscale" && model.engine === "raw" && model.scale === 4 && Math.max(prepared.width, prepared.height) < 320;
           const result = await runInWorker(
             worker,
-            { bytes: prepared.bytes, modelId: model.id, engine: model.engine, bgr: model.bgr, origin: window.location.origin, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: model.tileSize, stride: model.stride, ring: model.ring, pad: model.pad },
+            { bytes: prepared.bytes, modelId: model.id, engine: model.engine, bgr: model.bgr, origin: window.location.origin, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: model.tileSize, stride: model.stride, ring: model.ring, pad: model.pad, preClean: usePreClean ? { modelId: MODELS.denoise.id, bgr: false } : undefined },
             (pct, tile, total) => {
               setStage("processing");
               if (tile && total) setTileInfo(isEs ? `Paso ${tile} de ${total}` : `Step ${tile} of ${total}`);
@@ -234,6 +237,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           setResultUrl(URL.createObjectURL(outBlob));
           setResultDims({ w: result.width, h: result.height });
           setUsedLabel(`${(result.device ?? attempt.device) === "webgpu" ? "GPU" : "CPU"}`);
+          setResultPre(!!result.pre);
           setStage("done");
           setDivider(50);
           return;
@@ -454,7 +458,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/20 bg-surface/30 p-4">
             <div className="text-xs text-text-muted">
-              <p className="flex items-center gap-1.5"><FiZap className="text-primary" /> {usedLabel}</p>
+              <p className="flex items-center gap-1.5"><FiZap className="text-primary" /> {usedLabel}{resultPre ? (isEs ? " · restauración previa aplicada (foto muy pequeña)" : " · pre-restoration applied (very small photo)") : ""}</p>
               <p className="flex items-center gap-1.5 mt-1"><FiClock /> {isEs ? "Tiempo" : "Time"}: {elapsed}</p>
               {capped && <p className="flex items-center gap-1.5 mt-1"><FiCpu /> {isEs ? `Tu foto original es de ${srcDims.w}×${srcDims.h} y se ajustó a ${origDims.w}×${origDims.h} antes de procesar.` : `Your original photo is ${srcDims.w}×${srcDims.h} and was resized to ${origDims.w}×${origDims.h} before processing.`}</p>}
             </div>

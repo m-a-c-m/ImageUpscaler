@@ -239,13 +239,63 @@ self.onmessage = async (e: MessageEvent) => {
     type: string; reqId: number; bytes: ArrayBuffer; modelId: string; engine: "hf" | "raw";
     bgr: boolean; origin: string; device: "webgpu" | "wasm"; dtype?: string; scale: number;
     mode: "upscale" | "enhance"; tileSize: number; stride: number; ring: number; pad: number;
+    preClean?: { modelId: string; bgr: boolean };
   };
   if (m.type !== "run") return;
-  const { reqId, bytes, modelId, engine, bgr, origin, device, dtype, scale, mode, tileSize, stride, ring, pad } = m;
+  const { reqId, bytes, modelId, engine, bgr, origin, device, dtype, scale, tileSize, stride, ring, pad } = m;
   try {
     const bmp = await createImageBitmap(new Blob([bytes]));
     const w = bmp.width;
     const h = bmp.height;
+
+    let source: CanvasImageSource = bmp;
+    let preApplied = false;
+    if (m.preClean && engine === "raw" && scale === 4) {
+      try {
+        const base = new OffscreenCanvas(w, h);
+        base.getContext("2d")!.drawImage(bmp, 0, 0);
+        const hasGpuPre = typeof navigator !== "undefined" && "gpu" in navigator;
+        let clean: OffscreenCanvas;
+        try {
+          const sPre = await getRawSession(origin, m.preClean.modelId, hasGpuPre && device === "webgpu", w, () => {});
+          clean = await rawUpscale(sPre, base, 1, m.preClean.bgr);
+        } catch {
+          const sPre = await getRawSession(origin, m.preClean.modelId, false, w, () => {});
+          clean = await rawUpscale(sPre, base, 1, m.preClean.bgr);
+        }
+        const up2 = new OffscreenCanvas(w * 2, h * 2);
+        const uctx = up2.getContext("2d")!;
+        const srcId = clean.getContext("2d")!.getImageData(0, 0, w, h);
+        const dstId = uctx.createImageData(w * 2, h * 2);
+        const sd = srcId.data, dd = dstId.data;
+        const uw = w * 2, uh = h * 2;
+        for (let y = 0; y < uh; y++) {
+          const fy = (y + 0.5) / 2 - 0.5;
+          const y0 = Math.max(0, Math.min(h - 1, Math.floor(fy)));
+          const y1 = Math.min(h - 1, y0 + 1);
+          const ay = Math.max(0, fy - y0);
+          for (let x = 0; x < uw; x++) {
+            const fx = (x + 0.5) / 2 - 0.5;
+            const x0 = Math.max(0, Math.min(w - 1, Math.floor(fx)));
+            const x1 = Math.min(w - 1, x0 + 1);
+            const ax = Math.max(0, fx - x0);
+            const p00 = (y0 * w + x0) * 4, p10 = (y0 * w + x1) * 4;
+            const p01 = (y1 * w + x0) * 4, p11 = (y1 * w + x1) * 4;
+            const di = (y * uw + x) * 4;
+            for (let c = 0; c < 3; c++) {
+              dd[di + c] = sd[p00 + c] * (1 - ax) * (1 - ay) + sd[p10 + c] * ax * (1 - ay) + sd[p01 + c] * (1 - ax) * ay + sd[p11 + c] * ax * ay;
+            }
+            dd[di + 3] = 255;
+          }
+        }
+        uctx.putImageData(dstId, 0, 0);
+        source = up2;
+        preApplied = true;
+      } catch {
+        source = bmp;
+        preApplied = false;
+      }
+    }
 
     let runTile: (src: OffscreenCanvas, inW: number, inH: number) => Promise<OffscreenCanvas>;
     const progressCb = (pct: number) => self.postMessage({ type: "progress", reqId, pct });
@@ -279,17 +329,20 @@ self.onmessage = async (e: MessageEvent) => {
       runTile = (src, inW, inH) => runHf(pipe, src, inW * scale, inH * scale);
     }
 
-    const single = (tileSize <= 0 || (w <= tileSize && h <= tileSize)) && (engine === "hf" || engine === "raw");
+    const We = preApplied ? w * 2 : w;
+    const He = preApplied ? h * 2 : h;
+    const singleLimit = preApplied ? 512 : tileSize;
+    const single = (singleLimit <= 0 || (We <= singleLimit && He <= singleLimit)) && (engine === "hf" || engine === "raw");
     let finalCanvas: OffscreenCanvas;
 
     if (single) {
       self.postMessage({ type: "progress", reqId, pct: 100, tile: 1, total: 1 });
-      const src = new OffscreenCanvas(w, h);
-      src.getContext("2d")!.drawImage(bmp, 0, 0);
-      finalCanvas = await runTile(src, w, h);
+      const src = new OffscreenCanvas(We, He);
+      src.getContext("2d")!.drawImage(source, 0, 0);
+      finalCanvas = await runTile(src, We, He);
     } else if (engine === "raw") {
-      const gw = Math.ceil(w / stride);
-      const gh = Math.ceil(h / stride);
+      const gw = Math.ceil(We / stride);
+      const gh = Math.ceil(He / stride);
       const paddedW = ring + (gw - 1) * stride + tileSize + ring;
       const paddedH = ring + (gh - 1) * stride + tileSize + ring;
       const total = gw * gh;
@@ -297,11 +350,11 @@ self.onmessage = async (e: MessageEvent) => {
 
       const padded = new OffscreenCanvas(paddedW, paddedH);
       const pctx = padded.getContext("2d")!;
-      pctx.drawImage(bmp, ring, ring);
+      pctx.drawImage(source, ring, ring);
       if (ring > 0) {
-        if (w < paddedW - ring) pctx.drawImage(bmp, w - 1, 0, 1, h, ring + w, ring, paddedW - ring - w, h);
-        if (h < paddedH - ring) pctx.drawImage(bmp, 0, h - 1, w, 1, ring, ring + h, w, paddedH - ring - h);
-        if (w < paddedW - ring && h < paddedH - ring) pctx.drawImage(bmp, w - 1, h - 1, 1, 1, ring + w, ring + h, paddedW - ring - w, paddedH - ring - h);
+        if (We < paddedW - ring) pctx.drawImage(source, We - 1, 0, 1, He, ring + We, ring, paddedW - ring - We, He);
+        if (He < paddedH - ring) pctx.drawImage(source, 0, He - 1, We, 1, ring, ring + He, We, paddedH - ring - He);
+        if (We < paddedW - ring && He < paddedH - ring) pctx.drawImage(source, We - 1, He - 1, 1, 1, ring + We, ring + He, paddedW - ring - We, paddedH - ring - He);
       }
 
       const out = new OffscreenCanvas(gw * stride * scale, gh * stride * scale);
@@ -326,9 +379,18 @@ self.onmessage = async (e: MessageEvent) => {
         }
       }
 
-      const cropped = new OffscreenCanvas(w * scale, h * scale);
-      cropped.getContext("2d")!.drawImage(out, 0, 0, w * scale, h * scale, 0, 0, w * scale, h * scale);
-      finalCanvas = cropped;
+      let composed: OffscreenCanvas;
+      if (preApplied) {
+        composed = new OffscreenCanvas(w * scale, h * scale);
+        const cctx = composed.getContext("2d")!;
+        cctx.imageSmoothingEnabled = true;
+        cctx.imageSmoothingQuality = "high";
+        cctx.drawImage(out, 0, 0, out.width, out.height, 0, 0, w * scale, h * scale);
+      } else {
+        composed = new OffscreenCanvas(w * scale, h * scale);
+        composed.getContext("2d")!.drawImage(out, 0, 0, w * scale, h * scale, 0, 0, w * scale, h * scale);
+      }
+      finalCanvas = composed;
     } else {
       const tw = Math.min(tileSize, w);
       const th = Math.min(tileSize, h);
@@ -367,12 +429,14 @@ self.onmessage = async (e: MessageEvent) => {
       finalCanvas = out;
     }
 
-    if (mode === "enhance" && scale !== 1) {
-      const small = new OffscreenCanvas(w, h);
+    const targetW = w * scale;
+    const targetH = h * scale;
+    if (finalCanvas.width !== targetW || finalCanvas.height !== targetH) {
+      const small = new OffscreenCanvas(targetW, targetH);
       const sctx = small.getContext("2d")!;
       sctx.imageSmoothingEnabled = true;
       sctx.imageSmoothingQuality = "high";
-      sctx.drawImage(finalCanvas, 0, 0, w, h);
+      sctx.drawImage(finalCanvas, 0, 0, targetW, targetH);
       finalCanvas = small;
     }
 
@@ -381,7 +445,7 @@ self.onmessage = async (e: MessageEvent) => {
     const fh = finalCanvas.height;
     const imageData = fctx.getImageData(0, 0, fw, fh);
     const buf = imageData.data.buffer as ArrayBuffer;
-    self.postMessage({ type: "done", reqId, data: buf, width: fw, height: fh, device: usedDevice }, [buf]);
+    self.postMessage({ type: "done", reqId, data: buf, width: fw, height: fh, device: usedDevice, pre: preApplied }, [buf]);
   } catch (err) {
     if (engine === "hf") delete hfCache[`${modelId}::${device}`];
     for (const k of Object.keys(ortSessions)) if (k.includes(modelId)) delete ortSessions[k];
