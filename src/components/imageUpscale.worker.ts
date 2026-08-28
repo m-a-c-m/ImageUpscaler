@@ -115,6 +115,38 @@ function outputIsSane(data: Float32Array): boolean {
   return variance > 0.0002;
 }
 
+function outputMatchesInput(data: Float32Array, nchw: Float32Array, w: number, h: number, scale: number): boolean {
+  const ow = w * scale;
+  const oh = h * scale;
+  const opx = ow * oh;
+  const step = Math.max(1, Math.floor(opx / 4000));
+  let sum = 0;
+  let n = 0;
+  for (let oi = 0; oi < opx; oi += step) {
+    const ox = oi % ow;
+    const oy = (oi - ox) / ow;
+    const fx = Math.max(0, Math.min(w - 1, (ox + 0.5) / scale - 0.5));
+    const fy = Math.max(0, Math.min(h - 1, (oy + 0.5) / scale - 0.5));
+    const x0 = Math.min(w - 1, Math.floor(fx));
+    const y0 = Math.min(h - 1, Math.floor(fy));
+    const x1 = Math.min(w - 1, x0 + 1);
+    const y1 = Math.min(h - 1, y0 + 1);
+    const ax = fx - x0;
+    const ay = fy - y0;
+    for (let c = 0; c < 3; c++) {
+      const inPlane = c * w * h;
+      const p00 = nchw[inPlane + y0 * w + x0];
+      const p10 = nchw[inPlane + y0 * w + x1];
+      const p01 = nchw[inPlane + y1 * w + x0];
+      const p11 = nchw[inPlane + y1 * w + x1];
+      const bil = p00 * (1 - ax) * (1 - ay) + p10 * ax * (1 - ay) + p01 * (1 - ax) * ay + p11 * ax * ay;
+      sum += Math.abs(data[c * opx + oi] - bil);
+      n++;
+    }
+  }
+  return sum / n < 0.16;
+}
+
 function rawUpscale(
   session: ort.InferenceSession,
   src: OffscreenCanvas,
@@ -142,6 +174,7 @@ function rawUpscale(
     if (outW !== size * scale || outH !== h8 * scale) {
       throw new Error(`unexpected-output-size:${outW}x${outH}:expected:${size * scale}x${h8 * scale}`);
     }
+    if (!outputMatchesInput(data, nchw, size, h8, scale)) throw new Error("output-mismatch-vs-input");
     const c = new OffscreenCanvas(outW, outH);
     const cctx = c.getContext("2d")!;
     const oimg = cctx.createImageData(outW, outH);
@@ -188,7 +221,15 @@ async function runHf(pipe: AnyPipe, canvas: OffscreenCanvas, expectedW: number, 
   }
   if (!raw || !raw.width || !raw.data) throw new Error("empty-output");
   if (raw.width !== expectedW || raw.height !== expectedH) {
-    throw new Error(`unexpected-output-size:${raw.width}x${raw.height}:expected:${expectedW}x${expectedH}`);
+    const padW = raw.width - expectedW;
+    const padH = raw.height - expectedH;
+    if (padW < 0 || padH < 0 || padW > 32 || padH > 32) {
+      throw new Error(`unexpected-output-size:${raw.width}x${raw.height}:expected:${expectedW}x${expectedH}`);
+    }
+    const full = hfToCanvas(raw);
+    const cropped = new OffscreenCanvas(expectedW, expectedH);
+    cropped.getContext("2d")!.drawImage(full, 0, 0, expectedW, expectedH, 0, 0, expectedW, expectedH);
+    return cropped;
   }
   return hfToCanvas(raw);
 }
@@ -238,7 +279,7 @@ self.onmessage = async (e: MessageEvent) => {
       runTile = (src, inW, inH) => runHf(pipe, src, inW * scale, inH * scale);
     }
 
-    const single = engine === "hf" && (tileSize <= 0 || (w <= tileSize && h <= tileSize));
+    const single = (tileSize <= 0 || (w <= tileSize && h <= tileSize)) && (engine === "hf" || engine === "raw");
     let finalCanvas: OffscreenCanvas;
 
     if (single) {
