@@ -9,7 +9,7 @@ import {
 interface Props { locale?: string; }
 
 type Stage = "idle" | "loadingModel" | "processing" | "done" | "error";
-type Mode = "upscale" | "enhance";
+type Mode = "upscale" | "logo" | "enhance";
 type ModelKey = "x4-plksr" | "x4-esrgan" | "x2-light" | "dejpeg" | "denoise";
 
 interface ModelDef {
@@ -35,13 +35,14 @@ const NES = "https://huggingface.co/nesaorg";
 const MODELS: Record<ModelKey, ModelDef> = {
   "x4-plksr": { id: `${NES}/4xNomosWebPhoto_RealPLKSR_fp32_opset17/resolve/main/4xNomosWebPhoto_RealPLKSR_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, mb: 28, es: "Normal", en: "Standard", descEs: "El mejor equilibrio para fotos normales.", descEn: "The best balance for regular photos." },
   "x4-esrgan": { id: `${NES}/4xNomosWebPhoto_esrgan_fp32_opset17/resolve/main/4xNomosWebPhoto_esrgan_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, mb: 64, es: "Máxima calidad", en: "Max quality", descEs: "Más detalle en texturas, pero más lento.", descEn: "More texture detail, but slower." },
-  "x2-light": { id: "Xenova/swin2SR-lightweight-x2-64", engine: "hf", bgr: false, scale: 2, tileSize: 256, stride: 256, ring: 32, pad: 32, maxSide: 2048, shotLimit: 1024, mb: 8, es: "Capturas ×2", en: "Screenshots ×2", descEs: "Para capturas, logos e imágenes pequeñas.", descEn: "For screenshots, logos and small images." },
+  "x2-light": { id: "Xenova/swin2SR-lightweight-x2-64", engine: "hf", bgr: false, scale: 2, tileSize: 256, stride: 256, ring: 32, pad: 32, maxSide: 2048, shotLimit: 1024, mb: 8, es: "Logos y capturas", en: "Logos and screenshots", descEs: "El motor para gráficos: logos, dibujos y capturas. Llega a ×4 procesando en 2 pasos.", descEn: "The engine for graphics: logos, drawings and screenshots. Reaches ×4 in 2 steps." },
   dejpeg: { id: `${NES}/1xDeJPG_realplksr_otf_60_fp32_opset17/resolve/main/1xDeJPG_realplksr_otf_60_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 4096, shotLimit: 0, mb: 28, es: "Bloques o manchas de compresión", en: "Compression blocks or stains", descEs: "Fotos de WhatsApp, redes sociales o reenviadas muchas veces.", descEn: "Photos from WhatsApp, social media or forwarded many times." },
   denoise: { id: `${NES}/1xDeNoise_realplksr_otf_fp32/resolve/main/1xDeNoise_realplksr_otf_fp32.onnx`, engine: "raw", bgr: false, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 4096, shotLimit: 0, mb: 28, es: "Grano o ruido", en: "Grain or noise", descEs: "Fotos nocturnas, con poca luz o muy granuladas.", descEn: "Night shots, low-light or very grainy photos." },
 };
 
 const MODELS_BY_MODE: Record<Mode, ModelKey[]> = {
-  upscale: ["x4-plksr", "x4-esrgan", "x2-light"],
+  upscale: ["x4-plksr", "x4-esrgan"],
+  logo: ["x2-light"],
   enhance: ["dejpeg", "denoise"],
 };
 
@@ -52,7 +53,7 @@ interface WorkerResult { data: Uint8ClampedArray; width: number; height: number;
 
 function runInWorker(
   worker: Worker,
-  payload: { bytes: ArrayBuffer; modelId: string; engine: string; bgr: boolean; origin: string; device: string; dtype?: string; scale: number; mode: Mode; tileSize: number; stride: number; ring: number; pad: number; preClean?: { modelId: string; bgr: boolean } },
+  payload: { bytes: ArrayBuffer; modelId: string; engine: string; bgr: boolean; origin: string; device: string; dtype?: string; scale: number; mode: Mode; tileSize: number; stride: number; ring: number; pad: number; preClean?: { modelId: string; bgr: boolean }; chain?: number },
   onProgress: (pct: number, tile?: number, total?: number) => void,
 ): Promise<WorkerResult & { device?: string; pre?: boolean }> {
   return new Promise((resolve, reject) => {
@@ -72,7 +73,7 @@ function runInWorker(
     };
     worker.addEventListener("message", handler);
     try {
-      worker.postMessage({ type: "run", reqId, bytes: buf, modelId: payload.modelId, engine: payload.engine, bgr: payload.bgr, origin: payload.origin, device: payload.device, dtype: payload.dtype, scale: payload.scale, mode: payload.mode, tileSize: payload.tileSize, stride: payload.stride, ring: payload.ring, pad: payload.pad, preClean: payload.preClean }, [buf]);
+      worker.postMessage({ type: "run", reqId, bytes: buf, modelId: payload.modelId, engine: payload.engine, bgr: payload.bgr, origin: payload.origin, device: payload.device, dtype: payload.dtype, scale: payload.scale, mode: payload.mode, tileSize: payload.tileSize, stride: payload.stride, ring: payload.ring, pad: payload.pad, preClean: payload.preClean, chain: payload.chain }, [buf]);
     } catch (err) {
       worker.removeEventListener("message", handler);
       reject(err instanceof Error ? err : new Error(String(err)));
@@ -216,7 +217,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           const usePreClean = mode === "upscale" && model.engine === "raw" && model.scale === 4 && Math.max(prepared.width, prepared.height) < 320;
           const result = await runInWorker(
             worker,
-            { bytes: prepared.bytes, modelId: model.id, engine: model.engine, bgr: model.bgr, origin: window.location.origin, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: model.tileSize, stride: model.stride, ring: model.ring, pad: model.pad, preClean: usePreClean ? { modelId: MODELS.denoise.id, bgr: false } : undefined },
+            { bytes: prepared.bytes, modelId: model.id, engine: model.engine, bgr: model.bgr, origin: window.location.origin, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: model.tileSize, stride: model.stride, ring: model.ring, pad: model.pad, preClean: usePreClean ? { modelId: MODELS.denoise.id, bgr: false } : undefined, chain: mode === "logo" ? 2 : 1 },
             (pct, tile, total) => {
               setStage("processing");
               if (tile && total) setTileInfo(isEs ? `Paso ${tile} de ${total}` : `Step ${tile} of ${total}`);
@@ -283,7 +284,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
 
   const download = useCallback(() => {
     if (!resultUrl) return;
-    const prefix = mode === "enhance" ? "mejorada" : `ampliada-x${model.scale}`;
+    const prefix = mode === "enhance" ? "mejorada" : `ampliada-x${mode === "logo" ? 4 : model.scale}`;
     const a = document.createElement("a");
     a.href = resultUrl;
     a.download = `${prefix}-${resultDims.w}x${resultDims.h}.png`;
@@ -334,9 +335,10 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
       <div className="space-y-4 rounded-xl border border-border/20 bg-surface/30 p-4">
         <div>
           <label className="mb-2 block text-sm font-medium text-text">{isEs ? "1. ¿Qué quieres hacer?" : "1. What do you want to do?"}</label>
-          <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+          <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
             {([
-              ["upscale", FiMaximize2, isEs ? "Ampliar mi foto" : "Enlarge my photo", isEs ? "Hacerla ×4 más grande y nítida" : "Make it ×4 bigger and sharp"],
+              ["upscale", FiMaximize2, isEs ? "Ampliar foto ×4" : "Enlarge photo ×4", isEs ? "Fotos hechas con cámara, ×4 más grandes" : "Camera photos, ×4 bigger"],
+              ["logo", FiMaximize2, isEs ? "Ampliar logo o captura ×4" : "Enlarge logo or screenshot ×4", isEs ? "Logos, dibujos, capturas: motor de gráficos en 2 pasos" : "Logos, drawings, screenshots: graphics engine in 2 steps"],
               ["enhance", FiFileText, isEs ? "Mejorar mi foto" : "Enhance my photo", isEs ? "Mismo tamaño, mejor calidad" : "Same size, better quality"],
             ] as const).map(([id, Icon, title, desc]) => (
               <button key={id} onClick={() => setMode(id)} disabled={busy} className={`flex items-start gap-3 rounded-xl border p-3.5 text-left transition-colors disabled:opacity-40 ${mode === id ? "border-primary/60 bg-primary/10" : "border-border/30 bg-surface/40 hover:border-primary/30"}`}>
