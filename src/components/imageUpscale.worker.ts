@@ -144,7 +144,7 @@ function outputMatchesInput(data: Float32Array, nchw: Float32Array, w: number, h
       n++;
     }
   }
-  return sum / n < 0.16;
+  return sum / n < (scale === 1 ? 0.25 : 0.16);
 }
 
 function rawUpscale(
@@ -245,6 +245,7 @@ self.onmessage = async (e: MessageEvent) => {
   const { reqId, bytes, modelId, engine, bgr, origin, device, dtype, scale, tileSize, stride, ring, pad } = m;
   const hops = engine === "hf" && m.chain && m.chain > 1 ? m.chain : 1;
   const effScale = Math.pow(scale, hops);
+  const progressCb = (pct: number) => self.postMessage({ type: "progress", reqId, pct });
   try {
     const bmp = await createImageBitmap(new Blob([bytes]));
     const w = bmp.width;
@@ -259,10 +260,10 @@ self.onmessage = async (e: MessageEvent) => {
         const hasGpuPre = typeof navigator !== "undefined" && "gpu" in navigator;
         let clean: OffscreenCanvas;
         try {
-          const sPre = await getRawSession(origin, m.preClean.modelId, hasGpuPre && device === "webgpu", w, () => {});
+          const sPre = await getRawSession(origin, m.preClean.modelId, hasGpuPre && device === "webgpu", w, progressCb);
           clean = await rawUpscale(sPre, base, 1, m.preClean.bgr);
         } catch {
-          const sPre = await getRawSession(origin, m.preClean.modelId, false, w, () => {});
+          const sPre = await getRawSession(origin, m.preClean.modelId, false, w, progressCb);
           clean = await rawUpscale(sPre, base, 1, m.preClean.bgr);
         }
         const up2 = new OffscreenCanvas(w * 2, h * 2);
@@ -300,7 +301,6 @@ self.onmessage = async (e: MessageEvent) => {
     }
 
     let runTile: (src: OffscreenCanvas, inW: number, inH: number) => Promise<OffscreenCanvas>;
-    const progressCb = (pct: number) => self.postMessage({ type: "progress", reqId, pct });
     let usedDevice: "webgpu" | "wasm" = engine === "raw" ? device : device;
     let singleMode = false;
 
