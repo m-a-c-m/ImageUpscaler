@@ -194,6 +194,16 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
         return;
       }
 
+      if (mode === "logo" && Math.max(prepared.width, prepared.height) > 1400) {
+        setError(
+          isEs
+            ? "Esta imagen es muy grande para el motor de gráficos ×4 (tardaría más de 20 minutos). Reduce el tamaño de la imagen primero o usa el modo foto."
+            : "This image is too large for the ×4 graphics engine (it would take over 20 minutes). Resize it first or use the photo mode."
+        );
+        setStage("error");
+        return;
+      }
+
       const attempts: Attempt[] = model.engine === "raw"
         ? forceCpu || !hasGpu ? [{ device: "wasm" }] : [{ device: "webgpu" }]
         : forceCpu

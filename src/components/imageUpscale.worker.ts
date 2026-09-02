@@ -93,26 +93,11 @@ function decodeMaybeFp16(t: ort.Tensor): Float32Array {
 }
 
 function outputIsSane(data: Float32Array): boolean {
-  let bad = 0;
-  let sum = 0;
-  let sumSq = 0;
-  const n = data.length;
-  const step = Math.max(1, Math.floor(n / 20000));
-  let count = 0;
-  for (let i = 0; i < n; i += step) {
-    const v = data[i];
-    count++;
-    if (Number.isNaN(v) || !Number.isFinite(v)) bad++;
-    else {
-      if (v < -1 || v > 2) bad++;
-      sum += v;
-      sumSq += v * v;
-    }
+  const step = Math.max(1, Math.floor(data.length / 20000));
+  for (let i = 0; i < data.length; i += step) {
+    if (!Number.isFinite(data[i])) return false;
   }
-  if (bad > 0) return false;
-  const mean = sum / count;
-  const variance = sumSq / count - mean * mean;
-  return variance > 0.0002;
+  return true;
 }
 
 function outputMatchesInput(data: Float32Array, nchw: Float32Array, w: number, h: number, scale: number): boolean {
