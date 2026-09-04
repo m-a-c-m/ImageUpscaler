@@ -224,12 +224,13 @@ self.onmessage = async (e: MessageEvent) => {
     type: string; reqId: number; bytes: ArrayBuffer; modelId: string; engine: "hf" | "raw";
     bgr: boolean; origin: string; device: "webgpu" | "wasm"; dtype?: string; scale: number;
     mode: "upscale" | "enhance"; tileSize: number; stride: number; ring: number; pad: number;
-    preClean?: { modelId: string; bgr: boolean }; chain?: number;
+    preClean?: { modelId: string; bgr: boolean }; chain?: number; targetScale?: number;
   };
   if (m.type !== "run") return;
   const { reqId, bytes, modelId, engine, bgr, origin, device, dtype, scale, tileSize, stride, ring, pad } = m;
   const hops = engine === "hf" && m.chain && m.chain > 1 ? m.chain : 1;
   const effScale = Math.pow(scale, hops);
+  const effTarget = m.targetScale && m.targetScale >= 1 ? m.targetScale : effScale;
   const progressCb = (pct: number) => self.postMessage({ type: "progress", reqId, pct });
   try {
     const bmp = await createImageBitmap(new Blob([bytes]));
@@ -379,14 +380,17 @@ self.onmessage = async (e: MessageEvent) => {
 
       let composed: OffscreenCanvas;
       if (preApplied) {
-        composed = new OffscreenCanvas(w * effScale, h * effScale);
+        composed = new OffscreenCanvas(w * effTarget, h * effTarget);
         const cctx = composed.getContext("2d")!;
         cctx.imageSmoothingEnabled = true;
         cctx.imageSmoothingQuality = "high";
-        cctx.drawImage(out, 0, 0, out.width, out.height, 0, 0, w * effScale, h * effScale);
+        cctx.drawImage(out, 0, 0, out.width, out.height, 0, 0, w * effTarget, h * effTarget);
       } else {
-        composed = new OffscreenCanvas(w * effScale, h * effScale);
-        composed.getContext("2d")!.drawImage(out, 0, 0, w * effScale, h * effScale, 0, 0, w * effScale, h * effScale);
+        composed = new OffscreenCanvas(w * effTarget, h * effTarget);
+        const cctx = composed.getContext("2d")!;
+        cctx.imageSmoothingEnabled = true;
+        cctx.imageSmoothingQuality = "high";
+        cctx.drawImage(out, 0, 0, w * effScale, h * effScale, 0, 0, w * effTarget, h * effTarget);
       }
       finalCanvas = composed;
     } else {
@@ -427,8 +431,8 @@ self.onmessage = async (e: MessageEvent) => {
       finalCanvas = out;
     }
 
-    const targetW = w * effScale;
-    const targetH = h * effScale;
+    const targetW = w * effTarget;
+    const targetH = h * effTarget;
     if (finalCanvas.width !== targetW || finalCanvas.height !== targetH) {
       const small = new OffscreenCanvas(targetW, targetH);
       const sctx = small.getContext("2d")!;

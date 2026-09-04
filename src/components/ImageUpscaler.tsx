@@ -53,7 +53,7 @@ interface WorkerResult { data: Uint8ClampedArray; width: number; height: number;
 
 function runInWorker(
   worker: Worker,
-  payload: { bytes: ArrayBuffer; modelId: string; engine: string; bgr: boolean; origin: string; device: string; dtype?: string; scale: number; mode: Mode; tileSize: number; stride: number; ring: number; pad: number; preClean?: { modelId: string; bgr: boolean }; chain?: number },
+  payload: { bytes: ArrayBuffer; modelId: string; engine: string; bgr: boolean; origin: string; device: string; dtype?: string; scale: number; mode: Mode; tileSize: number; stride: number; ring: number; pad: number; preClean?: { modelId: string; bgr: boolean }; chain?: number; targetScale?: number },
   onProgress: (pct: number, tile?: number, total?: number) => void,
 ): Promise<WorkerResult & { device?: string; pre?: boolean }> {
   return new Promise((resolve, reject) => {
@@ -73,7 +73,7 @@ function runInWorker(
     };
     worker.addEventListener("message", handler);
     try {
-      worker.postMessage({ type: "run", reqId, bytes: buf, modelId: payload.modelId, engine: payload.engine, bgr: payload.bgr, origin: payload.origin, device: payload.device, dtype: payload.dtype, scale: payload.scale, mode: payload.mode, tileSize: payload.tileSize, stride: payload.stride, ring: payload.ring, pad: payload.pad, preClean: payload.preClean, chain: payload.chain }, [buf]);
+      worker.postMessage({ type: "run", reqId, bytes: buf, modelId: payload.modelId, engine: payload.engine, bgr: payload.bgr, origin: payload.origin, device: payload.device, dtype: payload.dtype, scale: payload.scale, mode: payload.mode, tileSize: payload.tileSize, stride: payload.stride, ring: payload.ring, pad: payload.pad, preClean: payload.preClean, chain: payload.chain, targetScale: payload.targetScale }, [buf]);
     } catch (err) {
       worker.removeEventListener("message", handler);
       reject(err instanceof Error ? err : new Error(String(err)));
@@ -116,6 +116,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
   const [forceCpu, setForceCpu] = useState(false);
   const [mode, setMode] = useState<Mode>("upscale");
   const [modelKey, setModelKey] = useState<ModelKey>("x4-plksr");
+  const [targetScale, setTargetScale] = useState<2 | 3 | 4>(2);
   const [origUrl, setOrigUrl] = useState("");
   const [resultUrl, setResultUrl] = useState("");
   const [origDims, setOrigDims] = useState({ w: 0, h: 0 });
@@ -227,7 +228,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           const usePreClean = mode === "upscale" && model.engine === "raw" && model.scale === 4 && Math.max(prepared.width, prepared.height) < 320;
           const result = await runInWorker(
             worker,
-            { bytes: prepared.bytes, modelId: model.id, engine: model.engine, bgr: model.bgr, origin: window.location.origin, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: model.tileSize, stride: model.stride, ring: model.ring, pad: model.pad, preClean: usePreClean ? { modelId: MODELS.denoise.id, bgr: false } : undefined, chain: mode === "logo" ? 2 : 1 },
+            { bytes: prepared.bytes, modelId: model.id, engine: model.engine, bgr: model.bgr, origin: window.location.origin, device: attempt.device, dtype: attempt.dtype, scale: model.scale, mode, tileSize: model.tileSize, stride: model.stride, ring: model.ring, pad: model.pad, preClean: usePreClean ? { modelId: MODELS.denoise.id, bgr: false } : undefined, chain: mode === "logo" ? (targetScale >= 3 ? 2 : 1) : 1, targetScale: mode === "enhance" ? undefined : targetScale },
             (pct, tile, total) => {
               setStage("processing");
               if (tile && total) setTileInfo(isEs ? `Paso ${tile} de ${total}` : `Step ${tile} of ${total}`);
@@ -294,12 +295,12 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
 
   const download = useCallback(() => {
     if (!resultUrl) return;
-    const prefix = mode === "enhance" ? "mejorada" : `ampliada-x${mode === "logo" ? 4 : model.scale}`;
+    const prefix = mode === "enhance" ? "mejorada" : `ampliada-x${targetScale}`;
     const a = document.createElement("a");
     a.href = resultUrl;
     a.download = `${prefix}-${resultDims.w}x${resultDims.h}.png`;
     a.click();
-  }, [resultUrl, resultDims, mode, model.scale]);
+  }, [resultUrl, resultDims, mode, targetScale]);
 
   const reset = useCallback(() => {
     setStage("idle");
@@ -381,6 +382,25 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
           </div>
         </div>
 
+        {mode !== "enhance" && (
+          <div>
+            <label className="mb-2 block text-sm font-medium text-text">{isEs ? "3. ¿Cuánto la quieres de grande?" : "3. How big should it be?"}</label>
+            <div className="grid grid-cols-3 gap-2">
+              {([2, 3, 4] as const).map((s) => (
+                <button key={s} onClick={() => setTargetScale(s)} disabled={busy} className={`rounded-xl border p-3 text-center transition-colors disabled:opacity-40 ${targetScale === s ? "border-primary/60 bg-primary/10" : "border-border/30 bg-surface/40 hover:border-primary/30"}`}>
+                  <span className={`block text-sm font-bold ${targetScale === s ? "text-primary" : "text-text"}`}>×{s}</span>
+                  <span className="block text-[11px] text-text-muted/70">{s === 2 ? (isEs ? "Máxima nitidez" : "Max sharpness") : s === 3 ? (isEs ? "Equilibrio" : "Balanced") : isEs ? "Máximo tamaño" : "Max size"}</span>
+                </button>
+              ))}
+            </div>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-text-muted/60">
+              {isEs
+                ? "El modelo siempre trabaja a ×4 internamente y ajusta al final: en ×2 las imperfecciones se suavizan y tarda lo mismo."
+                : "The model always works at ×4 internally and adjusts at the end: ×2 smooths imperfections and takes the same time."}
+            </p>
+          </div>
+        )}
+
         {!origUrl && (
           <label
             onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
@@ -389,7 +409,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
             className={`flex cursor-pointer flex-col items-center gap-3 rounded-xl border-2 border-dashed p-10 text-center transition-colors ${dragOver ? "border-primary/60 bg-primary/5" : "border-border/30 hover:border-primary/40"}`}
           >
             <FiUploadCloud className="text-3xl text-text-muted/60" />
-            <span className="text-sm font-semibold text-text">{isEs ? "3. Suelta tu foto aquí" : "3. Drop your photo here"}</span>
+            <span className="text-sm font-semibold text-text">{isEs ? "4. Suelta tu foto aquí" : "4. Drop your photo here"}</span>
             <span className="text-xs text-text-muted/60">JPG · PNG · WebP — {isEs ? "se procesa en tu navegador, nunca se sube a internet" : "processed in your browser, never uploaded"}</span>
             <input type="file" accept="image/*" className="hidden" onChange={(e) => onFile(e.target.files?.[0])} />
           </label>
