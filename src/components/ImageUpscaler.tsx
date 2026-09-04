@@ -490,7 +490,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/20 bg-surface/30 p-4">
             <div className="text-xs text-text-muted">
-              <p className="flex items-center gap-1.5"><FiZap className="text-primary" /> {usedLabel}{resultPre ? (isEs ? " · restauración previa aplicada (foto muy pequeña)" : " · pre-restoration applied (very small photo)") : ""}</p>
+              <p className="flex items-center gap-1.5"><FiZap className="text-primary" /> {usedLabel}{mode !== "enhance" ? ` · ×${targetScale}` : ""}{resultPre ? (isEs ? " · restauración previa aplicada (foto muy pequeña)" : " · pre-restoration applied (very small photo)") : ""}</p>
               <p className="flex items-center gap-1.5 mt-1"><FiClock /> {isEs ? "Tiempo" : "Time"}: {elapsed}</p>
               {capped && <p className="flex items-center gap-1.5 mt-1"><FiCpu /> {isEs ? `Tu foto original es de ${srcDims.w}×${srcDims.h} y se ajustó a ${origDims.w}×${origDims.h} antes de procesar.` : `Your original photo is ${srcDims.w}×${srcDims.h} and was resized to ${origDims.w}×${origDims.h} before processing.`}</p>}
             </div>

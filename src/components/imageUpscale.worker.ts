@@ -129,7 +129,7 @@ function outputMatchesInput(data: Float32Array, nchw: Float32Array, w: number, h
       n++;
     }
   }
-  return sum / n < (scale === 1 ? 0.25 : 0.16);
+  return sum / n < (scale === 1 ? 0.35 : 0.16);
 }
 
 function rawUpscale(
@@ -232,6 +232,23 @@ self.onmessage = async (e: MessageEvent) => {
   const effScale = Math.pow(scale, hops);
   const effTarget = m.targetScale && m.targetScale >= 1 ? m.targetScale : effScale;
   const progressCb = (pct: number) => self.postMessage({ type: "progress", reqId, pct });
+  let usedDevice: "webgpu" | "wasm" = engine === "raw" ? device : device;
+  let singleMode = false;
+  let gpuActive = false;
+  let gpuTried = false;
+  let tSize = tileSize;
+  let sStride = stride;
+  let rRing = ring;
+  if (engine === "raw") {
+    const hasGpuNow = typeof navigator !== "undefined" && "gpu" in navigator;
+    gpuActive = hasGpuNow && device === "webgpu";
+    usedDevice = gpuActive ? "webgpu" : "wasm";
+    if (gpuActive && scale === 4) {
+      tSize = 128;
+      sStride = 96;
+      rRing = 16;
+    }
+  }
   try {
     const bmp = await createImageBitmap(new Blob([bytes]));
     const w = bmp.width;
@@ -287,26 +304,19 @@ self.onmessage = async (e: MessageEvent) => {
     }
 
     let runTile: (src: OffscreenCanvas, inW: number, inH: number) => Promise<OffscreenCanvas>;
-    let usedDevice: "webgpu" | "wasm" = engine === "raw" ? device : device;
-    let singleMode = false;
-
     if (engine === "raw") {
-      const hasGpu = typeof navigator !== "undefined" && "gpu" in navigator;
-      let useGpu = hasGpu && device === "webgpu";
-      usedDevice = useGpu ? "webgpu" : "wasm";
-      let gpuTried = false;
       runTile = async (src, inW, inH) => {
         try {
-          const session = await getRawSession(origin, modelId, useGpu, inW, progressCb);
+          const session = await getRawSession(origin, modelId, gpuActive, inW, progressCb);
           const result = await rawUpscale(session, src, scale, bgr);
-          gpuTried = useGpu;
+          gpuTried = gpuActive;
           return result;
         } catch (err) {
-          if (!useGpu) throw err;
+          if (!gpuActive) throw err;
           if (gpuTried) {
             throw new Error("gpu-midrun-fail");
           }
-          useGpu = false;
+          gpuActive = false;
           usedDevice = "wasm";
           progressCb(0);
           const session = await getRawSession(origin, modelId, false, inW, progressCb);
@@ -329,7 +339,7 @@ self.onmessage = async (e: MessageEvent) => {
 
     const We = preApplied ? w * 2 : w;
     const He = preApplied ? h * 2 : h;
-    const singleLimit = preApplied ? 512 : tileSize;
+    const singleLimit = preApplied ? (gpuActive ? tSize : 512) : tSize;
     const single = (singleLimit <= 0 || (We <= singleLimit && He <= singleLimit)) && (engine === "hf" || engine === "raw");
     let finalCanvas: OffscreenCanvas;
 
@@ -340,38 +350,38 @@ self.onmessage = async (e: MessageEvent) => {
       src.getContext("2d")!.drawImage(source, 0, 0);
       finalCanvas = await runTile(src, We, He);
     } else if (engine === "raw") {
-      const gw = Math.ceil(We / stride);
-      const gh = Math.ceil(He / stride);
-      const paddedW = ring + (gw - 1) * stride + tileSize + ring;
-      const paddedH = ring + (gh - 1) * stride + tileSize + ring;
+      const gw = Math.ceil(We / sStride);
+      const gh = Math.ceil(He / sStride);
+      const paddedW = rRing + (gw - 1) * sStride + tSize + rRing;
+      const paddedH = rRing + (gh - 1) * sStride + tSize + rRing;
       const total = gw * gh;
       let done = 0;
 
       const padded = new OffscreenCanvas(paddedW, paddedH);
       const pctx = padded.getContext("2d")!;
-      pctx.drawImage(source, ring, ring);
-      if (ring > 0) {
-        if (We < paddedW - ring) pctx.drawImage(source, We - 1, 0, 1, He, ring + We, ring, paddedW - ring - We, He);
-        if (He < paddedH - ring) pctx.drawImage(source, 0, He - 1, We, 1, ring, ring + He, We, paddedH - ring - He);
-        if (We < paddedW - ring && He < paddedH - ring) pctx.drawImage(source, We - 1, He - 1, 1, 1, ring + We, ring + He, paddedW - ring - We, paddedH - ring - He);
+      pctx.drawImage(source, rRing, rRing);
+      if (rRing > 0) {
+        if (We < paddedW - rRing) pctx.drawImage(source, We - 1, 0, 1, He, rRing + We, rRing, paddedW - rRing - We, He);
+        if (He < paddedH - rRing) pctx.drawImage(source, 0, He - 1, We, 1, rRing, rRing + He, We, paddedH - rRing - He);
+        if (We < paddedW - rRing && He < paddedH - rRing) pctx.drawImage(source, We - 1, He - 1, 1, 1, rRing + We, rRing + He, paddedW - rRing - We, paddedH - rRing - He);
       }
 
-      const out = new OffscreenCanvas(gw * stride * effScale, gh * stride * effScale);
+      const out = new OffscreenCanvas(gw * sStride * effScale, gh * sStride * effScale);
       const octx = out.getContext("2d")!;
-      const keepW = stride * effScale;
-      const keepH = stride * effScale;
-      const crop = ring * effScale;
+      const keepW = sStride * effScale;
+      const keepH = sStride * effScale;
+      const crop = rRing * effScale;
 
       for (let j = 0; j < gh; j++) {
         for (let i = 0; i < gw; i++) {
-          const ox = ring + i * stride;
-          const oy = ring + j * stride;
-          const tmp = new OffscreenCanvas(tileSize, tileSize);
+          const ox = rRing + i * sStride;
+          const oy = rRing + j * sStride;
+          const tmp = new OffscreenCanvas(tSize, tSize);
           const tctx = tmp.getContext("2d")!;
-          tctx.drawImage(padded, ox, oy, tileSize, tileSize, 0, 0, tileSize, tileSize);
+          tctx.drawImage(padded, ox, oy, tSize, tSize, 0, 0, tSize, tSize);
 
-          const tileOut = await runTile(tmp, tileSize, tileSize);
-          octx.drawImage(tileOut, crop, crop, keepW, keepH, i * stride * effScale, j * stride * effScale, keepW, keepH);
+          const tileOut = await runTile(tmp, tSize, tSize);
+          octx.drawImage(tileOut, crop, crop, keepW, keepH, i * sStride * effScale, j * sStride * effScale, keepW, keepH);
 
           done++;
           self.postMessage({ type: "progress", reqId, pct: 100, tile: done, total });
@@ -384,7 +394,7 @@ self.onmessage = async (e: MessageEvent) => {
         const cctx = composed.getContext("2d")!;
         cctx.imageSmoothingEnabled = true;
         cctx.imageSmoothingQuality = "high";
-        cctx.drawImage(out, 0, 0, out.width, out.height, 0, 0, w * effTarget, h * effTarget);
+        cctx.drawImage(out, 0, 0, We * effScale, He * effScale, 0, 0, w * effTarget, h * effTarget);
       } else {
         composed = new OffscreenCanvas(w * effTarget, h * effTarget);
         const cctx = composed.getContext("2d")!;
@@ -394,8 +404,8 @@ self.onmessage = async (e: MessageEvent) => {
       }
       finalCanvas = composed;
     } else {
-      const tw = Math.min(tileSize, w);
-      const th = Math.min(tileSize, h);
+      const tw = Math.min(tSize, w);
+      const th = Math.min(tSize, h);
       const cols = Math.ceil(w / tw);
       const rows = Math.ceil(h / th);
       const total = cols * rows;
