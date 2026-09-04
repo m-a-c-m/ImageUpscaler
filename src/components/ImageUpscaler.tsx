@@ -10,7 +10,7 @@ interface Props { locale?: string; }
 
 type Stage = "idle" | "loadingModel" | "processing" | "done" | "error";
 type Mode = "upscale" | "logo" | "enhance";
-type ModelKey = "x4-plksr" | "x4-esrgan" | "x2-light" | "dejpeg" | "denoise";
+type ModelKey = "x4-fiel" | "x4-plksr" | "x4-esrgan" | "x2-light" | "dejpeg" | "denoise";
 
 interface ModelDef {
   id: string;
@@ -33,15 +33,16 @@ interface ModelDef {
 const NES = "https://huggingface.co/nesaorg";
 
 const MODELS: Record<ModelKey, ModelDef> = {
-  "x4-plksr": { id: `${NES}/4xNomosWebPhoto_RealPLKSR_fp32_opset17/resolve/main/4xNomosWebPhoto_RealPLKSR_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, mb: 28, es: "Normal", en: "Standard", descEs: "El mejor equilibrio para fotos normales.", descEn: "The best balance for regular photos." },
-  "x4-esrgan": { id: `${NES}/4xNomosWebPhoto_esrgan_fp32_opset17/resolve/main/4xNomosWebPhoto_esrgan_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, mb: 64, es: "Máxima calidad", en: "Max quality", descEs: "Más detalle en texturas, pero más lento.", descEn: "More texture detail, but slower." },
+  "x4-fiel": { id: `${NES}/4xLSDIRCompactN_fp32_opset17/resolve/main/4xLSDIRCompactN_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 4096, shotLimit: 0, mb: 2, es: "Fiel — sin alterar tu foto", en: "Faithful — keeps your photo as is", descEs: "Amplifica con IA reproduciendo la imagen tal cual, sin inventar detalle. Rápido y ligero.", descEn: "AI upscaling that reproduces the image exactly, without inventing detail. Fast and lightweight." },
+  "x4-plksr": { id: `${NES}/4xNomosWebPhoto_RealPLKSR_fp32_opset17/resolve/main/4xNomosWebPhoto_RealPLKSR_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, mb: 28, es: "Con realce estético", en: "Enhanced look", descEs: "Suaviza imperfecciones y embellece, pero altera más la foto original.", descEn: "Smooths imperfections and beautifies, but alters the original more." },
+  "x4-esrgan": { id: `${NES}/4xNomosWebPhoto_esrgan_fp32_opset17/resolve/main/4xNomosWebPhoto_esrgan_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 4, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 1024, shotLimit: 0, mb: 64, es: "Máxima calidad", en: "Max quality", descEs: "Más detalle en texturas, pero más lento y altera más.", descEn: "More texture detail, but slower and alters more." },
   "x2-light": { id: "Xenova/swin2SR-lightweight-x2-64", engine: "hf", bgr: false, scale: 2, tileSize: 256, stride: 256, ring: 32, pad: 32, maxSide: 2048, shotLimit: 1024, mb: 8, es: "Logos y capturas", en: "Logos and screenshots", descEs: "El motor para gráficos: logos, dibujos y capturas. Llega a ×4 procesando en 2 pasos.", descEn: "The engine for graphics: logos, drawings and screenshots. Reaches ×4 in 2 steps." },
   dejpeg: { id: `${NES}/1xDeJPG_realplksr_otf_60_fp32_opset17/resolve/main/1xDeJPG_realplksr_otf_60_fp32_opset17.onnx`, engine: "raw", bgr: false, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 4096, shotLimit: 0, mb: 28, es: "Bloques o manchas de compresión", en: "Compression blocks or stains", descEs: "Fotos de WhatsApp, redes sociales o reenviadas muchas veces.", descEn: "Photos from WhatsApp, social media or forwarded many times." },
   denoise: { id: `${NES}/1xDeNoise_realplksr_otf_fp32/resolve/main/1xDeNoise_realplksr_otf_fp32.onnx`, engine: "raw", bgr: false, scale: 1, tileSize: 256, stride: 192, ring: 32, pad: 0, maxSide: 4096, shotLimit: 0, mb: 28, es: "Grano o ruido", en: "Grain or noise", descEs: "Fotos nocturnas, con poca luz o muy granuladas.", descEn: "Night shots, low-light or very grainy photos." },
 };
 
 const MODELS_BY_MODE: Record<Mode, ModelKey[]> = {
-  upscale: ["x4-plksr", "x4-esrgan"],
+  upscale: ["x4-fiel", "x4-plksr", "x4-esrgan"],
   logo: ["x2-light"],
   enhance: ["dejpeg", "denoise"],
 };
@@ -115,7 +116,7 @@ export default function ImageUpscaler({ locale = "es" }: Props) {
   const [gpuDied, setGpuDied] = useState(false);
   const [forceCpu, setForceCpu] = useState(false);
   const [mode, setMode] = useState<Mode>("upscale");
-  const [modelKey, setModelKey] = useState<ModelKey>("x4-plksr");
+  const [modelKey, setModelKey] = useState<ModelKey>("x4-fiel");
   const [targetScale, setTargetScale] = useState<2 | 3 | 4>(2);
   const [origUrl, setOrigUrl] = useState("");
   const [resultUrl, setResultUrl] = useState("");
